@@ -98,8 +98,26 @@ MAIN="$(pgrep -x ChatGPT | head -1)"
 if [ -z "$MAIN" ]; then
   note "桌面端当前没在运行"
 else
-  if ps eww -o command -p "$MAIN" 2>/dev/null | tr ' ' '\n' | grep -q '^HTTP_PROXY='; then
-    ok "当前实例带代理环境（启动方式正确）"
+  # 判断是否带代理：优先看环境变量；ps e 读不到环境变量时退回 argv 里的 --proxy-server
+  PSOUT="$(ps eww -o command= -p "$MAIN" 2>/dev/null)"
+  ENV_VISIBLE=0
+  if printf '%s' "$PSOUT" | tr ' ' '\n' | grep -qE '^[A-Za-z_][A-Za-z0-9_]*='; then
+    ENV_VISIBLE=1
+  fi
+  HAS_PROXY=0
+  if [ "$ENV_VISIBLE" = "1" ]; then
+    printf '%s' "$PSOUT" | tr ' ' '\n' | grep -q '^HTTP_PROXY=' && HAS_PROXY=1
+  else
+    case "$(ps -o command= -p "$MAIN" 2>/dev/null)" in
+      *--proxy-server=*) HAS_PROXY=1 ;;
+    esac
+  fi
+  if [ "$HAS_PROXY" = "1" ]; then
+    if [ "$ENV_VISIBLE" = "1" ]; then
+      ok "当前实例带代理环境（启动方式正确）"
+    else
+      ok "当前实例带 --proxy-server 参数（启动方式正确）"
+    fi
   else
     bad "当前实例是裸启动的 —— 后端在直连，必然一直 Reconnecting"
     note "修复：退出应用后双击桌面「ChatGPT代理启动.command」"

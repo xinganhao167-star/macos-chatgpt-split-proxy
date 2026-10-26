@@ -1,300 +1,182 @@
 #!/bin/bash
-# install.sh —— 一键安装 macOS 上的「ChatGPT 走代理、其余直连」分流。
-#
-# 用法：
-#   ./install.sh                          # 默认 127.0.0.1:8080
-#   ./install.sh --proxy 127.0.0.1:7897   # 指定本地代理（HTTP 端口）
-#   ./install.sh --with-watchdog          # 额外装「代理看门狗」（桌面端裸启动时自动重启）
-#   ./install.sh --watchdog-only          # 只装看门狗（已装过主方案的人补装用）
-#   ./install.sh --dry-run                # 只打印将要执行的命令，不改动系统
-#
-# 装完得到：
-#   1. ~/proxy-pac/split.pac            分流规则
-#   2. LaunchAgent 常驻的 PAC 文件服务器（127.0.0.1:8899）
-#   3. ~/Desktop/ChatGPT代理启动.command  带代理启动 ChatGPT 桌面端
-#   4.（可选）代理看门狗 LaunchAgent，每分钟检查桌面端是不是裸启动
-#   并把系统「自动代理配置」指向该 PAC。
-
+# Install PAC + desktop launcher. Network settings change only when explicitly run.
 set -euo pipefail
-
-PROXY_HOST="127.0.0.1"
-PROXY_PORT="8080"
-PAC_PORT="8899"
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+source "$ROOT/common.sh"
 PAC_DIR="$HOME/proxy-pac"
 PAC_FILE="$PAC_DIR/split.pac"
-AGENT_LABEL="local.pac-server"
-AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
-LAUNCHER_PATH="$HOME/Desktop/ChatGPT代理启动.command"
-GUARD_LABEL="local.codex-proxy-guard"
-GUARD_PLIST="$HOME/Library/LaunchAgents/$GUARD_LABEL.plist"
+LAUNCHER="$HOME/Desktop/ChatGPT代理启动.command"
+AGENT_PLIST="$HOME/Library/LaunchAgents/local.pac-server.plist"
+GUARD_PLIST="$HOME/Library/LaunchAgents/local.codex-proxy-guard.plist"
 GUARD_DIR="$HOME/Library/Application Support/codex-proxy-guard"
-GUARD_SCRIPT="$GUARD_DIR/guard.sh"
-DRY_RUN="0"
-WITH_WATCHDOG="0"
-WATCHDOG_ONLY="0"
-
-bold() { printf '\033[1;34m%s\033[0m\n' "$*"; }
-ok()   { printf '  \033[1;32m✓\033[0m %s\n' "$*"; }
-warn() { printf '  \033[1;33m!\033[0m %s\n' "$*"; }
-die()  { printf '  \033[1;31m✗\033[0m %s\n' "$*" >&2; exit 1; }
-
-# dry-run 模式下只打印命令
-run_cmd() {
-  if [ "$DRY_RUN" = "1" ]; then
-    printf '  \033[0;90m[dry-run]\033[0m %s\n' "$*"
-  else
-    eval "$@"
-  fi
-}
-
+BACKUP_DIR="$CONFIG_DIR/pac-backup"
+DRY=0 WATCHDOG=0 WATCHDOG_ONLY=0 AUTO=0
+REQUEST_PROXY= REQUEST_PAC=
 usage() {
-  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
-  exit 0
+  echo "用法: ./install.sh [--proxy 127.0.0.1:PORT] [--pac-port PORT] [--with-watchdog] [--watchdog-only] [--auto-recover] [--dry-run]"
 }
-
-while [ $# -gt 0 ]; do
+die() { echo "安装失败：$*" >&2; exit 1; }
+while (($#)); do
   case "$1" in
-    --proxy)     PROXY="${2:-}"; PROXY_HOST="${PROXY%%:*}"; PROXY_PORT="${PROXY##*:}"; shift 2 ;;
-    --pac-port)  PAC_PORT="${2:-}"; shift 2 ;;
-    --with-watchdog) WITH_WATCHDOG="1"; shift ;;
-    --watchdog-only) WATCHDOG_ONLY="1"; WITH_WATCHDOG="1"; shift ;;
-    --dry-run)   DRY_RUN="1"; shift ;;
-    -h|--help)   usage ;;
-    *)           die "未知参数：$1（用 --help 查看用法）" ;;
+    --proxy) (($# >= 2)) || die "--proxy 缺少值"; REQUEST_PROXY="$2"; shift 2 ;;
+    --pac-port) (($# >= 2)) || die "--pac-port 缺少值"; REQUEST_PAC="$2"; shift 2 ;;
+    --with-watchdog) WATCHDOG=1; shift ;;
+    --watchdog-only) WATCHDOG=1; WATCHDOG_ONLY=1; shift ;;
+    --auto-recover) AUTO=1; WATCHDOG=1; shift ;;
+    --dry-run) DRY=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "未知参数 $1" ;;
   esac
 done
-
-[ "$(uname)" = "Darwin" ] || die "本脚本只适用于 macOS"
-
-PROXY_URL="http://${PROXY_HOST}:${PROXY_PORT}"
-
-# 步骤编号：装了看门狗就是 5 步，只装看门狗就是 1 步
-TOTAL=4
-[ "$WITH_WATCHDOG" = "1" ] && TOTAL=5
-[ "$WATCHDOG_ONLY" = "1" ] && TOTAL=1
-STEP=0
-step() { STEP=$((STEP + 1)); bold "$STEP/$TOTAL $1"; }
-
-bold "安装 macOS ChatGPT 分流方案"
-echo "  本地代理：$PROXY_URL"
-echo "  PAC 服务：http://127.0.0.1:${PAC_PORT}/split.pac"
-[ "$DRY_RUN" = "1" ] && warn "DRY-RUN 模式：不会真的改动系统"
-
-# ---------- 0. 前置检查 ----------
-if [ "$WATCHDOG_ONLY" != "1" ]; then
-  command -v python3 >/dev/null 2>&1 || die "找不到 python3。执行 xcode-select --install 安装命令行工具后重试"
-  if lsof -nP -iTCP:"$PAC_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-    warn "端口 ${PAC_PORT} 已被占用，PAC 服务器可能起不来。先执行 ./uninstall.sh 或换个 --pac-port"
-  fi
-fi
-if ! lsof -nP -iTCP:"$PROXY_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-  warn "本地代理端口 ${PROXY_PORT} 当前没有监听。安装可以继续，但要等你的代理客户端连上才生效"
-fi
-
-# ---------- 1. PAC 文件 ----------
-install_core() {
-step "写入 PAC 文件"
-mkdir -p "$PAC_DIR"
-if [ "$DRY_RUN" = "1" ]; then
-  printf '  \033[0;90m[dry-run]\033[0m 写入 %s（把 PROXY %s 替换进模板）\n' "$PAC_FILE" "$PROXY_HOST:$PROXY_PORT"
+[[ "$(uname)" == Darwin ]] || die "仅支持 macOS"
+if [[ -f "$CONFIG_FILE" ]]; then
+  load_config || die "现有配置无效，请先检查 $CONFIG_FILE"
 else
-  sed "s/PROXY 127\.0\.0\.1:8080/PROXY ${PROXY_HOST}:${PROXY_PORT}/g" "$(dirname "$0")/split.pac" > "$PAC_FILE"
+  PROXY_HOST=127.0.0.1 PROXY_PORT=8080 PAC_PORT=8899
 fi
-ok "$PAC_FILE"
+if [[ -n "$REQUEST_PROXY" ]]; then
+  [[ "$REQUEST_PROXY" =~ ^(127\.0\.0\.1|localhost):([0-9]{1,5})$ ]] || die "代理须为本机 host:port，例如 127.0.0.1:7897"
+  PROXY_HOST="${BASH_REMATCH[1]}" PROXY_PORT="${BASH_REMATCH[2]}"
+fi
+[[ -z "$REQUEST_PAC" ]] || PAC_PORT="$REQUEST_PAC"
+valid_port "$PROXY_PORT" && valid_port "$PAC_PORT" || die "端口必须为 1–65535"
+[[ "$WATCHDOG_ONLY" == 0 || ( -z "$REQUEST_PROXY" && -z "$REQUEST_PAC" ) ]] || die "--watchdog-only 使用已安装配置，不能改端口"
+[[ "$WATCHDOG_ONLY" == 0 || -f "$CONFIG_FILE" ]] || die "尚未安装主方案"
+[[ "$WATCHDOG" == 1 || ! -f "$GUARD_PLIST" ]] || WATCHDOG=1
+PROXY_URL="http://$PROXY_HOST:$PROXY_PORT"
+PAC_URL="http://127.0.0.1:$PAC_PORT/split.pac"
+if [[ "$DRY" == 1 ]]; then
+  echo "[dry-run] 代理 ${PROXY_URL}；PAC ${PAC_URL}；看门狗=${WATCHDOG}；仅在应用未运行时自动启动=$AUTO"
+  echo "[dry-run] 将更新 ${CONFIG_FILE}、PAC、启动器、LaunchAgent；保存各网络服务原 PAC 并设置 $PAC_URL"
+  exit 0
+fi
+[[ "$WATCHDOG_ONLY" == 1 || -x /usr/bin/python3 ]] || die "/usr/bin/python3 不可执行，PAC 服务无法启动"
+for cmd in networksetup launchctl nc curl; do command -v "$cmd" >/dev/null || die "缺少 $cmd"; done
 
-# ---------- 2. PAC 文件服务器（LaunchAgent）----------
-step "配置 PAC 文件服务器（开机自启）"
-mkdir -p "$HOME/Library/LaunchAgents"
-if [ "$DRY_RUN" = "1" ]; then
-  printf '  \033[0;90m[dry-run]\033[0m 写入 %s\n' "$AGENT_PLIST"
-else
+# A per-install transaction protects an existing installation if a step fails.
+TXN="$(mktemp -d)"
+declare -a FILES=()
+declare -a BACKUP_NEW=()
+backup_file() {
+  local file="$1" index="${#FILES[@]}"
+  FILES+=("$file")
+  if [[ -e "$file" ]]; then cp -p "$file" "$TXN/file.$index"; else : > "$TXN/absent.$index"; fi
+}
+restore_service() {
+  local file="$1" svc url enabled
+  IFS= read -r svc < "$file"
+  url="$(sed -n '2p' "$file")"
+  enabled="$(sed -n '3p' "$file")"
+  networksetup -setautoproxyurl "$svc" "$url" >/dev/null 2>&1 || true
+  [[ "$enabled" == Yes ]] && enabled=on || enabled=off
+  networksetup -setautoproxystate "$svc" "$enabled" >/dev/null 2>&1 || true
+}
+rollback() {
+  local i file
+  trap - ERR
+  for file in "$TXN"/service.*; do [[ -f "$file" ]] && restore_service "$file"; done
+  for ((i=0; i<${#FILES[@]}; i++)); do
+    file="${FILES[$i]}"
+    if [[ -f "$TXN/absent.$i" ]]; then rm -f "$file"; else cp -p "$TXN/file.$i" "$file"; fi
+  done
+  for file in "${BACKUP_NEW[@]}"; do rm -f "$file"; done
+  launchctl bootout "gui/$(id -u)/local.pac-server" 2>/dev/null || true
+  [[ -f "$AGENT_PLIST" ]] && launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST" 2>/dev/null || true
+  launchctl bootout "gui/$(id -u)/local.codex-proxy-guard" 2>/dev/null || true
+  [[ -f "$GUARD_PLIST" ]] && launchctl bootstrap "gui/$(id -u)" "$GUARD_PLIST" 2>/dev/null || true
+  rm -rf "$TXN"
+  echo "安装失败，已尝试恢复本次修改；请检查 PAC 和 LaunchAgent 状态。" >&2
+  exit 1
+}
+trap rollback ERR
+
+if [[ "$WATCHDOG_ONLY" == 0 ]]; then
+  LEGACY_INSTALL=0
+  [[ -f "$AGENT_PLIST" && -f "$PAC_FILE" ]] && LEGACY_INSTALL=1
+  # Snapshot every service BEFORE any write, preserving service names with spaces.
+  services_output="$(networksetup -listallnetworkservices)" || die "无法列出网络服务，未修改系统"
+  n=0
+  while IFS= read -r svc; do
+    [[ -n "$svc" ]] || continue
+    svc="${svc#\*}"
+    state="$(networksetup -getautoproxyurl "$svc")" || die "无法读取 $svc 的原 PAC 状态"
+    url="$(printf '%s\n' "$state" | sed -n 's/^URL: //p' | head -1)"
+    enabled="$(printf '%s\n' "$state" | sed -n 's/^Enabled: //p' | head -1)"
+    [[ "$enabled" == Yes || "$enabled" == No ]] || die "$svc 的 PAC 状态无法解析"
+    printf '%s\n%s\n%s\n' "$svc" "$url" "$enabled" > "$TXN/service.$n"
+    n=$((n+1))
+  done < <(printf '%s\n' "$services_output" | tail -n +2)
+  (( n > 0 )) || die "没有找到网络服务，未修改系统"
+  mkdir -p "$CONFIG_DIR" "$PAC_DIR" "$HOME/Desktop" "$HOME/Library/LaunchAgents" "$BACKUP_DIR"
+  for f in "$CONFIG_FILE" "$CONFIG_DIR/common.sh" "$PAC_FILE" "$LAUNCHER" "$AGENT_PLIST"; do backup_file "$f"; done
+  printf 'PROXY_HOST=%s\nPROXY_PORT=%s\nPAC_PORT=%s\n' "$PROXY_HOST" "$PROXY_PORT" "$PAC_PORT" > "$CONFIG_FILE"
+  chmod 600 "$CONFIG_FILE"
+  cp "$ROOT/common.sh" "$CONFIG_DIR/common.sh"
+  sed "s/PROXY 127\\.0\\.0\\.1:8080/PROXY $PROXY_HOST:$PROXY_PORT/g" "$ROOT/split.pac" > "$PAC_FILE"
+  cp "$ROOT/launcher.sh" "$LAUNCHER"
+  chmod +x "$LAUNCHER"
   cat > "$AGENT_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>${AGENT_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/bin/python3</string>
-        <string>-m</string>
-        <string>http.server</string>
-        <string>${PAC_PORT}</string>
-        <string>--bind</string>
-        <string>127.0.0.1</string>
-        <string>--directory</string>
-        <string>${PAC_DIR}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/tmp/${AGENT_LABEL}.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/${AGENT_LABEL}.err</string>
-</dict>
-</plist>
+<plist version="1.0"><dict>
+<key>Label</key><string>local.pac-server</string>
+<key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>-m</string><string>http.server</string><string>$PAC_PORT</string><string>--bind</string><string>127.0.0.1</string><string>--directory</string><string>$PAC_DIR</string></array>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+</dict></plist>
 PLIST
-fi
-run_cmd "launchctl bootout gui/\$(id -u)/${AGENT_LABEL} 2>/dev/null || true"
-run_cmd "launchctl bootstrap gui/\$(id -u) '${AGENT_PLIST}'"
-run_cmd "launchctl enable gui/\$(id -u)/${AGENT_LABEL}"
-ok "$AGENT_PLIST"
-
-# ---------- 3. 系统自动代理指向 PAC ----------
-step "设置系统自动代理（PAC）"
-SERVICES="$(networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | sed 's/^\*//')"
-for svc in $SERVICES; do
-  [ -z "$svc" ] && continue
-  if run_cmd "networksetup -setautoproxyurl '${svc}' 'http://127.0.0.1:${PAC_PORT}/split.pac'"; then
-    run_cmd "networksetup -setautoproxystate '${svc}' on"
-    ok "$svc → http://127.0.0.1:${PAC_PORT}/split.pac"
-  else
-    warn "$svc 设置失败，可能需要管理员权限：sudo networksetup -setautoproxyurl '${svc}' 'http://127.0.0.1:${PAC_PORT}/split.pac'"
-  fi
-done
-
-# ---------- 4. ChatGPT 桌面端启动器 ----------
-step "生成 ChatGPT 桌面端启动器"
-if [ "$DRY_RUN" = "1" ]; then
-  printf '  \033[0;90m[dry-run]\033[0m 写入 %s（代理 %s）\n' "$LAUNCHER_PATH" "$PROXY_URL"
-else
-  mkdir -p "$HOME/Desktop"
-  cat > "$LAUNCHER_PATH" <<LAUNCHER
-#!/bin/bash
-# 用本地代理启动 ChatGPT / Codex 桌面端；其余应用不受影响。
-# 生成自 macos-chatgpt-split-proxy
-#
-# 为什么必须用它启动：桌面端不跟随 macOS 系统代理（PAC），
-# 只有注入 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY + --proxy-server 才会走代理。
-# 桌面端自动更新后会自己重启成"裸启动"，那时就会一直 Reconnecting —— 重开一次即可。
-
-PROXY_URL="${PROXY_URL}"
-APP="/Applications/ChatGPT.app"
-LOG="/tmp/chatgpt-proxy-launch.log"
-
-if [ ! -d "\$APP" ]; then
-  echo "找不到 \$APP，请先安装 ChatGPT 桌面端。" | tee -a "\$LOG"
-  read -r -p "按回车键关闭…" _
-  exit 1
+  launchctl bootout "gui/$(id -u)/local.pac-server" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST"
+  served=0
+  for attempt in 1 2 3 4 5; do
+    response="$(curl --noproxy '*' -fsS --max-time 2 "$PAC_URL" 2>/dev/null || true)"
+    if [[ "$response" == *"PROXY $PROXY_HOST:$PROXY_PORT"* ]]; then served=1; break; fi
+    sleep 1
+  done
+  [[ "$served" == 1 ]] || { echo "PAC 服务器未提供预期规则，取消网络设置变更" >&2; false; }
+  for file in "$TXN"/service.*; do
+    [[ -f "$file" ]] || continue
+    IFS= read -r svc < "$file"
+    key="$(printf '%s' "$svc" | cksum | awk '{print $1}')"
+    if [[ ! -f "$BACKUP_DIR/$key" && ! -f "$BACKUP_DIR/legacy.$key" ]]; then
+      old_url="$(sed -n '2p' "$file")"
+      if [[ "$LEGACY_INSTALL" == 1 && "$old_url" == http://127.0.0.1:*/split.pac* ]]; then
+        printf '%s\n' "$svc" > "$BACKUP_DIR/legacy.$key"
+        BACKUP_NEW+=("$BACKUP_DIR/legacy.$key")
+        echo "警告：$svc 已使用旧版项目 PAC，无法推断安装前配置；卸载时将保留该服务设置。" >&2
+      else
+        cp "$file" "$BACKUP_DIR/$key"
+        BACKUP_NEW+=("$BACKUP_DIR/$key")
+      fi
+    fi
+    networksetup -setautoproxyurl "$svc" "$PAC_URL"
+    networksetup -setautoproxystate "$svc" on
+  done
 fi
 
-# 代理没起来就别启动了，否则应用会一直卡在加载页
-if ! nc -z -G 2 \$(echo "\$PROXY_URL" | sed 's#http://##; s#:# #') 2>/dev/null; then
-  echo "本地代理 \$PROXY_URL 没有响应。请先连上你的代理客户端再点我。" | tee -a "\$LOG"
-  read -r -p "按回车键关闭…" _
-  exit 1
-fi
-
-# 清掉残留进程：ChatGPT 是单实例，残留进程会占着锁导致窗口打不开
-pkill -15 -f '/Applications/ChatGPT.app' 2>/dev/null
-sleep 3
-pkill -9 -f '/Applications/ChatGPT.app' 2>/dev/null
-sleep 1
-
-# 两层代理都要给：
-#   --proxy-server       给 Chromium/Electron 外壳
-#   HTTP_PROXY 等变量   给内置的 codex CLI(Rust) 后端，它不认 socks5://，只认 http://
-HTTP_PROXY="\$PROXY_URL" \\
-HTTPS_PROXY="\$PROXY_URL" \\
-ALL_PROXY="\$PROXY_URL" \\
-"\$APP/Contents/MacOS/ChatGPT" --proxy-server="\$PROXY_URL" >>"\$LOG" 2>&1 &
-
-sleep 3
-MAIN="\$(pgrep -x ChatGPT | head -1)"
-# 校验：环境变量可见就看 HTTP_PROXY；读不到环境变量就退回 argv 里的 --proxy-server
-PSOUT="\$(ps eww -o command= -p "\$MAIN" 2>/dev/null)"
-if printf '%s' "\$PSOUT" | tr ' ' '\\n' | grep -qE '^[A-Za-z_][A-Za-z0-9_]*='; then
-  HAS_PROXY="\$(printf '%s' "\$PSOUT" | tr ' ' '\\n' | grep -c '^HTTP_PROXY=')"
-else
-  HAS_PROXY="\$(ps -o command= -p "\$MAIN" 2>/dev/null | grep -c -- '--proxy-server=')"
-fi
-if [ -n "\$MAIN" ] && [ "\${HAS_PROXY:-0}" -gt 0 ]; then
-  echo "已带代理启动（\$PROXY_URL）。如果窗口里还在转圈，等几秒再看。"
-else
-  echo "启动异常：应用没拿到代理环境变量，试试再点一次。"
-fi
-
-exit 0
-LAUNCHER
-  chmod +x "$LAUNCHER_PATH"
-fi
-ok "$LAUNCHER_PATH"
-}
-
-if [ "$WATCHDOG_ONLY" != "1" ]; then
-  install_core
-fi
-
-# ---------- 5. 代理看门狗（可选）----------
-if [ "$WITH_WATCHDOG" = "1" ]; then
-  step "安装代理看门狗（桌面端裸启动时自动重启）"
-  if [ "$DRY_RUN" = "1" ]; then
-    printf '  \033[0;90m[dry-run]\033[0m 写入 %s 与 %s\n' "$GUARD_SCRIPT" "$GUARD_PLIST"
-  else
-    mkdir -p "$GUARD_DIR" "$HOME/Library/LaunchAgents"
-    cp "$(dirname "$0")/guard.sh" "$GUARD_SCRIPT"
-    chmod +x "$GUARD_SCRIPT"
-    cat > "$GUARD_PLIST" <<PLIST
+if [[ "$WATCHDOG" == 1 ]]; then
+  mkdir -p "$GUARD_DIR" "$HOME/Library/LaunchAgents"
+  backup_file "$GUARD_DIR/guard.sh"
+  backup_file "$GUARD_DIR/common.sh"
+  backup_file "$GUARD_PLIST"
+  cp "$ROOT/guard.sh" "$GUARD_DIR/guard.sh"
+  cp "$ROOT/common.sh" "$GUARD_DIR/common.sh"
+  chmod +x "$GUARD_DIR/guard.sh"
+  ARG="<string>$GUARD_DIR/guard.sh</string>"
+  [[ "$AUTO" == 1 ]] && ARG="$ARG<string>--auto-recover</string>"
+  cat > "$GUARD_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>${GUARD_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/bash</string>
-        <string>${GUARD_SCRIPT}</string>
-    </array>
-    <key>StartInterval</key>
-    <integer>60</integer>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>ProcessType</key>
-    <string>Background</string>
-    <key>StandardOutPath</key>
-    <string>/tmp/${GUARD_LABEL}.out</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/${GUARD_LABEL}.err</string>
-</dict>
-</plist>
+<plist version="1.0"><dict>
+<key>Label</key><string>local.codex-proxy-guard</string>
+<key>ProgramArguments</key><array><string>/bin/bash</string>$ARG</array>
+<key>StartInterval</key><integer>60</integer><key>RunAtLoad</key><true/>
+<key>StandardOutPath</key><string>/tmp/local.codex-proxy-guard.out</string>
+<key>StandardErrorPath</key><string>/tmp/local.codex-proxy-guard.err</string>
+</dict></plist>
 PLIST
-  fi
-  run_cmd "launchctl bootout gui/\$(id -u)/${GUARD_LABEL} 2>/dev/null || true"
-  run_cmd "launchctl bootstrap gui/\$(id -u) '${GUARD_PLIST}'"
-  run_cmd "launchctl enable gui/\$(id -u)/${GUARD_LABEL}"
-  ok "$GUARD_SCRIPT"
-  ok "$GUARD_PLIST"
-else
-  warn "没装看门狗。桌面端自动更新后如果一直 Reconnecting，执行 ./install.sh --watchdog-only 补装"
+  launchctl bootout "gui/$(id -u)/local.codex-proxy-guard" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$GUARD_PLIST"
 fi
-
-# ---------- 完成 ----------
-if [ "$WATCHDOG_ONLY" = "1" ]; then
-  bold "看门狗安装完成"
-else
-  bold "安装完成"
-fi
-cat <<EOF
-
-  日常两步，顺序不能反：
-    1) 先连上你的代理客户端（Anycast / Clash / Surge 等），确认本地 HTTP 端口 ${PROXY_PORT} 已监听
-    2) 网页版：直接用 Chrome 打开 https://chatgpt.com （系统 PAC 已生效，只有 ChatGPT 域名走代理）
-       桌面端：双击桌面上的「ChatGPT代理启动.command」
-EOF
-if [ "$WITH_WATCHDOG" = "1" ]; then
-cat <<EOF
-
-  看门狗每 60 秒检查一次桌面端是否裸启动，裸启动满 120 秒就自动带代理重启
-  日志：~/Library/Logs/codex-proxy-guard.log
-  单次体检：${GUARD_SCRIPT} --check
-EOF
-fi
-cat <<EOF
-
-  自检：./diagnose.sh
-  卸载：./uninstall.sh
-EOF
+trap - ERR
+rm -rf "$TXN"
+echo "安装完成：代理 ${PROXY_URL}，PAC ${PAC_URL}；看门狗=${WATCHDOG}；安全自动启动=$AUTO"

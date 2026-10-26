@@ -1,236 +1,83 @@
-# macos-chatgpt-split-proxy
+# macOS ChatGPT 分流代理
 
-> **只让 ChatGPT 走代理，其他一切直连。** macOS 原生方案：不装网络扩展、不改路由表、不接管整机流量。
+保留系统 PAC 供浏览器分流，使用桌面启动器为 ChatGPT 主进程和 Codex 子进程提供同一个本地 HTTP 代理。不使用 TUN、全局代理或网络扩展。安装脚本会修改 macOS 网络服务的自动代理配置；先用 `--dry-run` 查看计划。
 
-**English summary** — Route only ChatGPT/OpenAI traffic through a local HTTP proxy (Anycast / Clash / Surge / …) on macOS, while everything else stays direct. Uses the system PAC (auto-proxy) for browsers plus a small launcher that injects proxy settings into the ChatGPT desktop app. Optionally installs a watchdog LaunchAgent that notices the desktop app restarting itself without proxy settings and relaunches it through the launcher. No Network Extension, no TUN mode, no root privileges, no account changes.
-
----
-
-## 为什么需要它
-
-本地代理客户端一般只有三种模式：
-
-| 模式 | 结果 |
-|---|---|
-| 全局 / TUN | 整机流量走代理：国内站点绕远甚至打不开，出口 IP 全变，账号风控变高 |
-| 系统代理 | 浏览器能用，但只认 HTTP 代理设置的客户端要单独配，容易漏 |
-| **仅代理（只开本地端口）** | 谁用谁走，最干净 —— 但要自己指定"谁走" |
-
-这个方案在「仅代理」之上，用**系统 PAC**解决浏览器，用**启动器**解决桌面端，其余流量一律直连。
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                                                          │
-│  ChatGPT 网页 (Chrome)  ──┐                              │
-│                           ├──▶ 系统 PAC ──▶ 127.0.0.1:8080 │
-│  ChatGPT 桌面端 (启动器) ─┘         │         （本地代理）   │
-│                                    │                      │
-│  百度 / 微信 / 邮件 / 终端 …──▶ DIRECT（直连，出口 IP 不变）│
-└──────────────────────────────────────────────────────────┘
-```
-
-## 快速开始
+## 安装与更新
 
 ```bash
-git clone https://github.com/xinganhao167-star/macos-chatgpt-split-proxy.git
-cd macos-chatgpt-split-proxy
-
-./install.sh                          # 默认本地代理 127.0.0.1:8080
-./install.sh --proxy 127.0.0.1:7897   # Clash Verge 等换端口
-./install.sh --with-watchdog          # 顺带装「代理看门狗」，桌面端裸启动时自动恢复
-./diagnose.sh                         # 一键体检，看看哪一环断了
+./install.sh --dry-run
+./install.sh                                  # 默认 127.0.0.1:8080
+./install.sh --proxy 127.0.0.1:7897           # 自定义本地 HTTP 代理端口
+./install.sh --proxy 127.0.0.1:7897 --pac-port 8900
+./install.sh --with-watchdog                  # 每分钟只检查、记日志、告警
+./install.sh --watchdog-only                  # 使用已安装配置补装看门狗
 ```
 
-装完日常就两步，**顺序不能反**：
+更新时再次运行安装脚本。省略 `--proxy` / `--pac-port` 会沿用已安装配置，而非退回默认端口。配置保存在 `~/Library/Application Support/chatgpt-split-proxy/config`；PAC、启动器、诊断和看门狗都读取这个配置或由它生成。端口只接受本机 `127.0.0.1` / `localhost` 的 HTTP 代理。PAC 文件服务器固定用 `/usr/bin/python3`，安装前也检查同一路径。
 
-1. 连上代理客户端，**保持「仅代理 / 系统代理关闭」模式**（不要开 TUN、不要开系统代理）。
-2. 网页版：直接用 **Chrome** 打开 <https://chatgpt.com>；桌面端：双击桌面上的 **ChatGPT代理启动.command**。
+安装器首次修改每个网络服务前记录其 PAC URL 与启用状态。服务名中的空格会完整保留。重复安装不会覆盖原始备份。安装发生错误时会尝试恢复本次改动并报告失败；如果旧版安装没有保存原 PAC，无法推断安装前的值，卸载时会保留该服务的 PAC 与服务器并提醒手工处理。
 
-> 没连节点就点启动器 = 应用卡在加载页；连上节点后再点一次即可。
+日常使用：先连接本地 HTTP 代理，再在 Chrome 中访问 [ChatGPT](https://chatgpt.com)；桌面端用 `~/Desktop/ChatGPT代理启动.command` 打开。启动器在代理不可用时拒绝启动；若 ChatGPT 已运行，它会提示你在应用内**手动退出**，不会终止现有进程或 Codex 任务。网页 PAC 仍对 OpenAI/ChatGPT 相关域名代理，其余域名直连；`chatgpt.com` 与 `openai.com` 根域名也在规则中。
 
-## 装了什么
-
-| 路径 | 作用 |
-|---|---|
-| `~/proxy-pac/split.pac` | 分流规则：ChatGPT/OpenAI 域名 → `PROXY 127.0.0.1:8080`，其余 `DIRECT` |
-| `~/Library/LaunchAgents/local.pac-server.plist` | 常驻 PAC 文件服务器（`python3 -m http.server 8899`），开机自启 |
-| `~/Desktop/ChatGPT代理启动.command` | 带代理启动 ChatGPT 桌面端 |
-| 系统「自动代理配置」 | 指向 `http://127.0.0.1:8899/split.pac` |
-| `~/Library/Application Support/codex-proxy-guard/guard.sh` | **（可选）**代理看门狗脚本 |
-| `~/Library/LaunchAgents/local.codex-proxy-guard.plist` | **（可选）**每 60 秒跑一次看门狗 |
-
-## 原理：为什么非得这么绕
-
-这几条都是实测踩出来的，改任何一条都会翻车。
-
-### 1. PAC 必须用 `http://` 提供，不能用 `file://`
-
-Safari / WebKit **直接忽略** `file://` 的 PAC（只发 DNS 不建 TCP）。用 `http://` 指向本地小服务器才有效。Chrome 两种都认。
-
-### 2. ChatGPT 桌面端要喂**两层**代理
-
-ChatGPT.app 是 Electron 外壳 + 内置 `codex` CLI（Rust）缝在一起的：
-
-- Chromium 外壳只认 `--proxy-server=` 启动参数；
-- 内置 CLI **只认环境变量** `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`，而且**不认 `socks5://` 格式** —— 填 SOCKS5 时它会静默直连，然后卡死在加载页。
-
-所以必须**同时**给两层，而且代理地址要写成 `http://`：
+## 看门狗与安全恢复
 
 ```bash
-HTTP_PROXY=http://127.0.0.1:8080 \
-HTTPS_PROXY=http://127.0.0.1:8080 \
-ALL_PROXY=http://127.0.0.1:8080 \
-/Applications/ChatGPT.app/Contents/MacOS/ChatGPT --proxy-server=http://127.0.0.1:8080 &
-```
-
-另外两个细节：
-
-- 用 `open --args` 传不进去环境变量（`open` 不继承 shell 环境），要**直接跑二进制**；
-- ChatGPT 是**单实例**应用，残留进程会占着锁导致"点了没反应 / 窗口打不开"，启动前先 `pkill -15` → 3 秒 → `pkill -9` 清场。
-
-### 3. Safari 实测不遵守 PAC
-
-同一份 PAC，Chrome 秒过，Safari 装死（`file://`、`http://` 都试过）。这是 WebKit 的行为，不是配置写错。
-
-**结论：ChatGPT 网页用 Chrome，Safari 留给国内站点直连。**
-
-### 4. 不用按应用分流工具（比如 ProxyBridge）
-
-按应用分流看起来更优雅，实际踩到一串硬伤：
-
-- 它的本地 SOCKS5 不支持 UDP（`UDP ASSOCIATE` 直接回 `REP=0x07`）；
-- 进程名匹配**大小写敏感**（实际进程是小写 `codex`，规则写 `*Codex*` 不生效）；
-- 扩展以 root 运行、杀不掉、没有停止按钮，配置**不热重载**；
-- 还要在「系统设置」里授权网络扩展。
-
-PAC + 启动器这两步不需要 root、不需要授权、不装扩展。
-
-### 5. 直连时 ChatGPT 域名会被污染
-
-不开代理时 `chatgpt.com` 解析到 `31.13.73.9`（Facebook 段），连接会被 TCP 重置。这是墙的行为，不是本机问题。
-
-### 6. 桌面端会自己更新并重启自己 —— 这是最隐蔽的坑
-
-Codex/ChatGPT 桌面端会**自动更新内置的 core**（比如 26.1021 → 26.1025），更新完**重启自身**。而它重启时是 launchd 拉起的，拿不到你启动器里的代理环境变量，于是变成裸直连 —— 表现就是**突然开始一直 `Reconnecting` / `request timed out`**，而此时代理客户端明明是好的、网页也正常。
-
-判断方法（Codex 自带体检）：
-
-```bash
-/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex doctor
-```
-
-看 Connectivity 段：
-
-```
-✓ network      no proxy env vars          ← 没有代理环境 = 裸启动
-    respect system proxy     disabled      ← Codex 默认不跟随系统 PAC
-    managed proxy            not configured
-⚠ ChatGPT inference URL  https://chatgpt.com/backend-api/… request timed out (required)
-```
-
-`doctor` 里 `proxy env vars present HTTP_PROXY, HTTPS_PROXY, ALL_PROXY` + `websocket connected` 才算真的通了。
-
-顺带两个坑：
-
-- Codex **默认不跟随 macOS 系统代理（PAC）**，所以浏览器能用不代表桌面端能用；
-- 想在 `~/.codex/config.toml` 里写 `[network] respect_system_proxy = true` 是**无效的**，当前版本不认这个键，设置页会直接提示 `Codex is ignoring 1 unrecognized configuration setting`。`network.proxy_url` / `network.socks_url` 是**沙箱执行器**的网络代理键，不作用于模型 API 流量。
-
-**结论：桌面端一旦出现连不上，先退出、用启动器重开，而不是去折腾代理客户端。**
-
-## 代理看门狗（可选组件）
-
-上一节那个"桌面端自更新后裸启动"的坑，手动解法是退出重开。想让它自动恢复，就装看门狗：
-
-```bash
-./install.sh --with-watchdog      # 装主方案 + 看门狗
-./install.sh --watchdog-only      # 已经装过主方案，只补看门狗
-```
-
-它每 60 秒检查一次，按下表处理：
-
-| 情况 | 处理 |
-|---|---|
-| 桌面端没在运行 | 什么都不做 |
-| 桌面端带着代理 | 什么都不做 |
-| 桌面端裸启动，且已存活 ≥ 120 秒 | 先确认本地代理端口通，再用桌面启动器带代理重启一次 |
-| 30 分钟内已经重启过 3 次 | 停手并记日志（避免无限重启），需要人工介入 |
-
-装的位置：
-
-| 路径 | 作用 |
-|---|---|
-| `~/Library/Application Support/codex-proxy-guard/guard.sh` | 看门狗脚本 |
-| `~/Library/LaunchAgents/local.codex-proxy-guard.plist` | `StartInterval 60`，后台跑 |
-| `~/Library/Logs/codex-proxy-guard.log` | 日志 |
-
-体检与手动操作：
-
-```bash
-# 单次体检：退出码 0=健康 1=裸启动 2=桌面端没运行
+./install.sh --with-watchdog
 "$HOME/Library/Application Support/codex-proxy-guard/guard.sh" --check
-
-# 看它干了什么
-tail -f ~/Library/Logs/codex-proxy-guard.log
+tail -f "$HOME/Library/Logs/codex-proxy-guard.log"
 ```
 
-只卸看门狗（保留主方案）：
+默认看门狗**只检测并记录告警**，对错误或未知状态尝试显示 macOS 通知（同类告警最多每 30 分钟一次），绝不会杀死或重启正在运行的 ChatGPT。它核对主进程启动参数、主进程和直接 Codex 子进程的三个非空且精确匹配的代理变量，以及本地代理 TCP 端口。看不到环境、找不到 Codex 子进程或存在多个主进程时报告 `UNKNOWN`。返回码：`0` 为配置检查通过，`1` 为明确错误，`2` 为应用未运行，`3` 为未知。即使返回 0，也**不代表 WebSocket 已连接**。
+
+仅在明确希望“应用未运行时自动启动”时，可用 `./install.sh --with-watchdog --auto-recover`。此模式只在**没有运行中的桌面主进程**、启动器存在、代理端口可达、取得互斥锁且距上次启动至少 30 分钟时运行启动器。它不会终止运行中的应用，也不会尝试猜测 Codex 是否空闲，因此无法自动修复已运行但丢失代理的进程。要关闭自动启动，重新运行 `./install.sh --with-watchdog`。
+
+目前**不建议开启自动恢复**：对正在运行的 Codex 编码任务，无法可靠判断是否可以安全重启。观察模式能保留证据，让用户选择合适的时机手动退出重开。
+
+## 诊断
 
 ```bash
-launchctl bootout gui/$(id -u)/local.codex-proxy-guard
-rm -f ~/Library/LaunchAgents/local.codex-proxy-guard.plist
-rm -rf "$HOME/Library/Application Support/codex-proxy-guard"
+./diagnose.sh
 ```
 
-资源占用：每轮约 6ms，非常驻、不占常驻内存。
+诊断结果按层区分：
 
-两个实现细节（也是实测踩出来的坑）：
+| 标记 | 含义 |
+|---|---|
+| `LOCAL_OK/BAD` | 本地 HTTP 代理 TCP 端口 |
+| `PAC_OK/UNKNOWN` | PAC 服务器与配置端口 |
+| `SYSTEM_PAC_OK/UNKNOWN` | macOS 当前自动代理指向 |
+| `API_REACHABLE/UNKNOWN` | 经代理请求 ChatGPT 后端的 HTTP 层；403 也仅代表 HTTP 有响应 |
+| `CONFIG_OK/BAD/UNKNOWN` | 当前桌面主进程和 Codex 子进程代理配置 |
+| `WEBSOCKET_UNKNOWN` | 脚本没有观测实际桌面长连接 |
+| `DOCTOR_OK/UNKNOWN` | 临时 `codex doctor` 诊断进程，不能代替当前桌面进程 |
 
-- macOS 的 `ps` **没有 `etimes` 关键字**（那是 GNU/Linux 的），算进程存活时间要用 `ps -o etime=` 自己换算成秒；
-- `ps e` 对部分系统二进制（比如 `/bin/sleep`）**读不到环境变量**，所以判断"有没有带代理"必须用**双信号**：环境变量可见就看 `HTTP_PROXY`，读不到就退回命令行里的 `--proxy-server=`。只看环境变量会出现"明明带了代理却报警"的假象。
+`doctor` 最多运行 15 秒，失败或超时会明确标为 `UNKNOWN`。代理变量或 `--proxy-server` 只证明配置，不证明 API 鉴权或 WebSocket 稳定。诊断不会编辑 `~/.codex/config.toml`、会话、凭证或工作目录。
 
-## 常见症状 → 处理
+在 2026-10-26 的一次只读检查中，本机 ChatGPT 主进程由 `/Applications/ChatGPT.app/Contents/MacOS/ChatGPT` 运行，两个直接 Codex 子进程由应用资源目录中的 `codex` 运行，三者均可读到相同代理环境变量。这是当时的状态，不能证明更新后一定保留或一定丢失代理。内置 CLI `0.164.0-alpha.11.1` 的 `features list` 将 `respect_system_proxy` 标为开发中且关闭；[OpenAI 官方配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)没有列出此设置，因此本项目不自动写入该项。`features.network_proxy` 文档描述的是沙箱命令网络代理，不能当成桌面模型 API 流量的修复开关。
 
-| 症状 | 原因 | 处理 |
-|---|---|---|
-| 桌面端一直转圈 / `Reconnecting` / `request timed out` | 实例是裸启动的（没带代理环境） | 退出后用桌面启动器重开；`codex doctor` 看 `proxy env vars` 有没有值。装了看门狗则会自动恢复 |
-| 桌面端点了没反应 | 残留进程占单实例锁 | `pkill -15 -f '/Applications/ChatGPT.app'; sleep 3; pkill -9 -f '/Applications/ChatGPT.app'` |
-| 网页能开、桌面端不行 | 只配了 PAC，桌面端不吃 PAC | 用桌面启动器启动 |
-| ChatGPT 网页打不开 | Safari 不认 PAC | 换 Chrome |
-| 国内站点变慢 / 打不开 | 代理客户端开了 TUN 或系统代理 | 切回「仅代理」模式 |
-| `curl` 测 chatgpt.com 返回 403 | Cloudflare 人机验证 | 浏览器里正常打开即可，不算被墙（看响应头有没有 `cf-mitigated`） |
-| 出口 IP 和代理出口一样 | 代理客户端开了全局模式 | 切回「仅代理」模式 |
-| 换了节点还是不通 | 节点本身不可用 | 换节点；`curl -x http://127.0.0.1:8080 https://chatgpt.com/` 验证 |
+## 卸载与回滚
 
-## 常见客户端的本地端口
+```bash
+./uninstall.sh
+```
 
-`./install.sh --proxy host:port` 指定：
+卸载会在当前 PAC 仍指向本项目时恢复每个网络服务安装前保存的 URL 和开关；若用户或其他程序已改动 PAC，则保留当前值并提示。旧版安装没有原始备份时，会保留相关 PAC 服务以免留下失效 URL。卸载不会停止 ChatGPT/Codex 进程，不会删除 Codex 会话或配置。重新安装可重复执行。
 
-| 客户端 | HTTP 端口 | SOCKS5 端口 |
-|---|---|---|
-| Anycast（仅代理模式） | **8080** | 1080 |
-| ClashX / Clash for Windows | 7890 | 7891 |
-| Clash Verge / Verge Rev | 7897 | 7898 |
-| Surge | 6152 | 6153 |
-| V2RayU | 1087 | 1080 |
-| sing-box | 2080 | 2080 |
+## 自动化与真实 Mac 验收
 
-> 注意部分客户端的 SOCKS5 端口不支持 UDP，也不支持 IPv6 目标 —— 本方案的启动器一律用 **HTTP 端口**，就是为了避开这两个坑。
+```bash
+/usr/bin/python3 -m unittest discover -s tests -v
+for f in *.sh; do bash -n "$f" || exit 1; done
+```
 
-## 已知限制
+测试使用临时 HOME 和命令替身，不改变真实网络设置。它覆盖 PAC 域名规则、自定义端口、重复安装与卸载恢复、失败回滚、异常进程状态、诊断失败/超时及自动恢复限制。替身测试**不能证明真实 Codex WebSocket 故障已修复**。
 
-- **Safari 走不了这套分流**（WebKit 不遵守 PAC），ChatGPT 网页请用 Chrome。
-- PAC 服务器依赖 `python3`（macOS 自带的 `/usr/bin/python3` 若未安装，执行 `xcode-select --install`）。
-- 需要手动连代理客户端节点；本方案不代替代理客户端本身。
-- 极少数客户端的本地端口会变，用 `lsof -nP -iTCP -sTCP:LISTEN` 或 `diagnose.sh` 确认。
-- 看门狗重启桌面端时，**桌面端里未保存的内容会丢**（应用被重启的固有限制）。介意就别装看门狗，改成手动退出重开。
+真实 Mac 人工验收清单：
 
-## 安全与合规
-
-- 本项目**不修改** ChatGPT 客户端、不绕过任何账号验证、不做批量注册。
-- 账号风控的真正变量是**出口 IP 的稳定性**：频繁换地区、换 IP 才容易触发风控，固定一个稳定节点比什么都管用。
-- 分流的判据很简单：**直连查 IP 显示国内家宽、对话流量走境外出口**，两个身份同时存在，说明分流生效，不是异常。
-- `diagnose.sh` 里的出口 IP 查询会访问 `api.ipify.org` / `ip.3322.net` / `myip.ipip.net` 之一，属于第三方服务，介意的话可以跳过第 ④ 步。
-
-## License
-
-MIT
+1. 在没有正在执行的 Codex 任务时，记录各网络服务 `networksetup -getautoproxyurl "服务名"` 和当前 PAC；先运行 `./install.sh --dry-run`，确认没有目录或网络变更。
+2. 用实际本地代理端口安装，确认 `config`、PAC 返回内容及启动器一致；Chrome 访问 `chatgpt.com`，同时确认普通国内站点直连正常。
+3. 在应用中手动退出后用启动器打开；查看 `./diagnose.sh` 中主进程、Codex 子进程、代理端口和 API 四层结果。用应用内实际 Codex 任务观察长连接一段时间，记录出现 Reconnecting 的时间和日志。
+4. 在有 Codex 任务运行时再次点启动器、运行默认看门狗，确认它们只提示/记录，不终止进程。模拟代理断开、启动器缺失和应用未运行，核对 `BAD/UNKNOWN/ABSENT`。
+5. 仅在有意测试时开启 `--auto-recover`；确认应用运行中绝不重启，应用未运行时最多启动一次，30 分钟内不会重复启动。
+6. 重复安装相同或新端口并检查网页规则；卸载后逐项核对原 PAC URL 与开关恢复。如旧版没有备份，按提示手动处理保留的 PAC。
+7. 若要验证“更新或重启导致丢失环境”的假设，在更新前后分别记录主进程和 Codex 子进程的 PID、PPID、可见代理变量及 `--proxy-server`、应用日志与 Reconnecting 时间；不要为了测试强制结束正在运行的任务。

@@ -10,6 +10,8 @@ function FindProxyForURL(url, host) {
 
     // ChatGPT 网页版 / 桌面端 / API 及其登录、支付、统计等依赖域名
     var openaiDomains = [
+        "openai.com",
+        "chatgpt.com",
         "*.openai.com",
         "*.chatgpt.com",
         "*.oaistatic.com",

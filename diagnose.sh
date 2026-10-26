@@ -93,14 +93,36 @@ case "$code" in
 esac
 
 echo
-bold "⑥ ChatGPT 桌面端残留进程"
-# 只数主进程（辅助进程名字带 "ChatGPT Helper"），主进程多于一个 = 有残留占着单实例锁
-leftover="$(pgrep -x ChatGPT 2>/dev/null | wc -l | tr -d ' ')"
-if [ "${leftover:-0}" -le 1 ]; then
-  ok "没有多余的 ChatGPT 主进程"
+bold "⑥ Codex 桌面端启动方式"
+MAIN="$(pgrep -x ChatGPT | head -1)"
+if [ -z "$MAIN" ]; then
+  note "桌面端当前没在运行"
 else
-  warn "$leftover 个 ChatGPT 主进程，窗口可能打不开（单实例锁被占）"
-  note "清理：pkill -15 -f '/Applications/ChatGPT.app'; sleep 3; pkill -9 -f '/Applications/ChatGPT.app'"
+  if ps eww -o command -p "$MAIN" 2>/dev/null | tr ' ' '\n' | grep -q '^HTTP_PROXY='; then
+    ok "当前实例带代理环境（启动方式正确）"
+  else
+    bad "当前实例是裸启动的 —— 后端在直连，必然一直 Reconnecting"
+    note "修复：退出应用后双击桌面「ChatGPT代理启动.command」"
+  fi
+  # 只数主进程（辅助进程名字带 "ChatGPT Helper"），主进程多于一个 = 有残留占着单实例锁
+  leftover="$(pgrep -x ChatGPT 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "${leftover:-0}" -gt 1 ]; then
+    warn "$leftover 个 ChatGPT 主进程，窗口可能打不开（单实例锁被占）"
+    note "清理：pkill -15 -f '/Applications/ChatGPT.app'; sleep 3; pkill -9 -f '/Applications/ChatGPT.app'"
+  fi
+fi
+
+echo
+bold "⑦ Codex 自带体检（模拟启动器的代理环境）"
+CODEX_CLI="/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+if [ -x "$CODEX_CLI" ]; then
+  note "下面这组结果 = 带上代理后能不能打通 API；普通终端里跑 doctor 必然是 no proxy env vars"
+  HTTP_PROXY="http://$PROXY_HOST:$PROXY_PORT" \
+  HTTPS_PROXY="http://$PROXY_HOST:$PROXY_PORT" \
+  ALL_PROXY="http://$PROXY_HOST:$PROXY_PORT" \
+  "$CODEX_CLI" doctor 2>&1 | grep -E 'proxy env vars|inference URL|websocket ' | head -8 | sed 's/^/    /'
+else
+  note "没找到内置 codex CLI，跳过"
 fi
 
 echo

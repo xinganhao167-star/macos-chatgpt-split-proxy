@@ -143,8 +143,12 @@ else
   mkdir -p "$HOME/Desktop"
   cat > "$LAUNCHER_PATH" <<LAUNCHER
 #!/bin/bash
-# 用本地代理启动 ChatGPT 桌面端；其余应用不受影响。
+# 用本地代理启动 ChatGPT / Codex 桌面端；其余应用不受影响。
 # 生成自 macos-chatgpt-split-proxy
+#
+# 为什么必须用它启动：桌面端不跟随 macOS 系统代理（PAC），
+# 只有注入 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY + --proxy-server 才会走代理。
+# 桌面端自动更新后会自己重启成"裸启动"，那时就会一直 Reconnecting —— 重开一次即可。
 
 PROXY_URL="${PROXY_URL}"
 APP="/Applications/ChatGPT.app"
@@ -177,7 +181,14 @@ HTTPS_PROXY="\$PROXY_URL" \\
 ALL_PROXY="\$PROXY_URL" \\
 "\$APP/Contents/MacOS/ChatGPT" --proxy-server="\$PROXY_URL" >>"\$LOG" 2>&1 &
 
-sleep 2
+sleep 3
+MAIN="\$(pgrep -x ChatGPT | head -1)"
+if [ -n "\$MAIN" ] && ps eww -o command -p "\$MAIN" 2>/dev/null | tr ' ' '\\n' | grep -q '^HTTP_PROXY='; then
+  echo "已带代理启动（\$PROXY_URL）。如果窗口里还在转圈，等几秒再看。"
+else
+  echo "启动异常：应用没拿到代理环境变量，试试再点一次。"
+fi
+
 exit 0
 LAUNCHER
   chmod +x "$LAUNCHER_PATH"

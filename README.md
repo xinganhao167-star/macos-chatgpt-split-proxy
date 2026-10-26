@@ -106,11 +106,39 @@ PAC + 启动器这两步不需要 root、不需要授权、不装扩展。
 
 不开代理时 `chatgpt.com` 解析到 `31.13.73.9`（Facebook 段），连接会被 TCP 重置。这是墙的行为，不是本机问题。
 
+### 6. 桌面端会自己更新并重启自己 —— 这是最隐蔽的坑
+
+Codex/ChatGPT 桌面端会**自动更新内置的 core**（比如 26.1021 → 26.1025），更新完**重启自身**。而它重启时是 launchd 拉起的，拿不到你启动器里的代理环境变量，于是变成裸直连 —— 表现就是**突然开始一直 `Reconnecting` / `request timed out`**，而此时代理客户端明明是好的、网页也正常。
+
+判断方法（Codex 自带体检）：
+
+```bash
+/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex doctor
+```
+
+看 Connectivity 段：
+
+```
+✓ network      no proxy env vars          ← 没有代理环境 = 裸启动
+    respect system proxy     disabled      ← Codex 默认不跟随系统 PAC
+    managed proxy            not configured
+⚠ ChatGPT inference URL  https://chatgpt.com/backend-api/… request timed out (required)
+```
+
+`doctor` 里 `proxy env vars present HTTP_PROXY, HTTPS_PROXY, ALL_PROXY` + `websocket connected` 才算真的通了。
+
+顺带两个坑：
+
+- Codex **默认不跟随 macOS 系统代理（PAC）**，所以浏览器能用不代表桌面端能用；
+- 想在 `~/.codex/config.toml` 里写 `[network] respect_system_proxy = true` 是**无效的**，当前版本不认这个键，设置页会直接提示 `Codex is ignoring 1 unrecognized configuration setting`。`network.proxy_url` / `network.socks_url` 是**沙箱执行器**的网络代理键，不作用于模型 API 流量。
+
+**结论：桌面端一旦出现连不上，先退出、用启动器重开，而不是去折腾代理客户端。**
+
 ## 常见症状 → 处理
 
 | 症状 | 原因 | 处理 |
 |---|---|---|
-| 桌面端一直转圈不输出 | CLI 后端没拿到代理 | 确认代理地址是 `http://` 而不是 `socks5://`；确认节点可用 |
+| 桌面端一直转圈 / `Reconnecting` / `request timed out` | 实例是裸启动的（没带代理环境） | 退出后用桌面启动器重开；`codex doctor` 看 `proxy env vars` 有没有值 |
 | 桌面端点了没反应 | 残留进程占单实例锁 | `pkill -15 -f '/Applications/ChatGPT.app'; sleep 3; pkill -9 -f '/Applications/ChatGPT.app'` |
 | 网页能开、桌面端不行 | 只配了 PAC，桌面端不吃 PAC | 用桌面启动器启动 |
 | ChatGPT 网页打不开 | Safari 不认 PAC | 换 Chrome |

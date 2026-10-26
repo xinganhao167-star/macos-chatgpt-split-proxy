@@ -28,8 +28,9 @@ fi
 
 echo
 bold "② 系统自动代理（PAC）"
-if scutil --proxy | grep -q "ProxyAutoConfigEnable : 1"; then
-  url="$(scutil --proxy | awk '/ProxyAutoConfigURLString/{print $3}')"
+PROXY_SYS="$(scutil --proxy 2>/dev/null)"
+if printf '%s' "$PROXY_SYS" | grep -q "ProxyAutoConfigEnable : 1"; then
+  url="$(printf '%s' "$PROXY_SYS" | awk '/ProxyAutoConfigURLString/{print $3}')"
   ok "PAC 已启用：$url"
   case "$url" in
     *"$PAC_PORT"*) ok "指向本方案启动的 PAC 服务器（端口 $PAC_PORT）" ;;
@@ -38,7 +39,7 @@ if scutil --proxy | grep -q "ProxyAutoConfigEnable : 1"; then
 else
   bad "PAC 未启用 —— 执行 ./install.sh"
 fi
-if scutil --proxy | grep -q "SOCKSEnable : 1"; then
+if printf '%s' "$PROXY_SYS" | grep -q "SOCKSEnable : 1"; then
   warn "系统 SOCKS 代理处于开启状态，整机流量可能仍被接管，建议关掉"
 fi
 
@@ -99,16 +100,20 @@ if [ -z "$MAIN" ]; then
   note "桌面端当前没在运行"
 else
   # 判断是否带代理：优先看环境变量；ps e 读不到环境变量时退回 argv 里的 --proxy-server
+  # 注意：不要用 `... | grep -q`（pipefail + SIGPIPE 会误判），用 read -ra 切词
   PSOUT="$(ps eww -o command= -p "$MAIN" 2>/dev/null)"
+  ARGV="$(ps -o command= -p "$MAIN" 2>/dev/null)"
   ENV_VISIBLE=0
-  if printf '%s' "$PSOUT" | tr ' ' '\n' | grep -qE '^[A-Za-z_][A-Za-z0-9_]*='; then
-    ENV_VISIBLE=1
-  fi
   HAS_PROXY=0
-  if [ "$ENV_VISIBLE" = "1" ]; then
-    printf '%s' "$PSOUT" | tr ' ' '\n' | grep -q '^HTTP_PROXY=' && HAS_PROXY=1
-  else
-    case "$(ps -o command= -p "$MAIN" 2>/dev/null)" in
+  read -ra TOKENS <<< "$PSOUT"
+  for t in ${TOKENS[@]+"${TOKENS[@]}"}; do
+    case "$t" in
+      HTTP_PROXY=*) HAS_PROXY=1; ENV_VISIBLE=1 ;;
+      [A-Za-z_]*=*) ENV_VISIBLE=1 ;;
+    esac
+  done
+  if [ "$ENV_VISIBLE" = "0" ]; then
+    case "$ARGV" in
       *--proxy-server=*) HAS_PROXY=1 ;;
     esac
   fi
@@ -141,6 +146,36 @@ if [ -x "$CODEX_CLI" ]; then
   "$CODEX_CLI" doctor 2>&1 | grep -E 'proxy env vars|inference URL|websocket ' | head -8 | sed 's/^/    /'
 else
   note "没找到内置 codex CLI，跳过"
+fi
+
+echo
+bold "⑧ 代理看门狗"
+GUARD_LABEL="local.codex-proxy-guard"
+GUARD_SCRIPT="$HOME/Library/Application Support/codex-proxy-guard/guard.sh"
+GUARD_LOG="$HOME/Library/Logs/codex-proxy-guard.log"
+# 注意：不能写成 launchctl list | grep -q —— pipefail 下 grep 提前退出会让
+#       launchctl 收到 SIGPIPE，整条管道被判成失败
+LAUNCHD_JOBS="$(launchctl list 2>/dev/null)"
+if printf '%s' "$LAUNCHD_JOBS" | grep -q "$GUARD_LABEL"; then
+  ok "LaunchAgent 已加载（$GUARD_LABEL，每 60 秒检查一次）"
+else
+  warn "看门狗没装 —— 桌面端自动更新后裸启动会一直 Reconnecting"
+  note "补装：./install.sh --watchdog-only"
+fi
+if [ -x "$GUARD_SCRIPT" ]; then
+  GUARD_OUT="$("$GUARD_SCRIPT" --check 2>&1 | head -1)"
+  case "$GUARD_OUT" in
+    *健康*) ok "$GUARD_OUT" ;;
+    *裸启动*) bad "$GUARD_OUT" ;;
+    *) note "$GUARD_OUT" ;;
+  esac
+  if [ -f "$GUARD_LOG" ]; then
+    echo
+    note "最近日志："
+    tail -5 "$GUARD_LOG" 2>/dev/null | sed 's/^/    /'
+  fi
+else
+  note "没找到看门狗脚本 $GUARD_SCRIPT"
 fi
 
 echo

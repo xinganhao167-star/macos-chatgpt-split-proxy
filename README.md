@@ -2,7 +2,7 @@
 
 > **只让 ChatGPT 走代理，其他一切直连。** macOS 原生方案：不装网络扩展、不改路由表、不接管整机流量。
 
-**English summary** — Route only ChatGPT/OpenAI traffic through a local HTTP proxy (Anycast / Clash / Surge / …) on macOS, while everything else stays direct. Uses the system PAC (auto-proxy) for browsers plus a small launcher that injects proxy settings into the ChatGPT desktop app. No Network Extension, no TUN mode, no root privileges, no account changes.
+**English summary** — Route only ChatGPT/OpenAI traffic through a local HTTP proxy (Anycast / Clash / Surge / …) on macOS, while everything else stays direct. Uses the system PAC (auto-proxy) for browsers plus a small launcher that injects proxy settings into the ChatGPT desktop app. Optionally installs a watchdog LaunchAgent that notices the desktop app restarting itself without proxy settings and relaunches it through the launcher. No Network Extension, no TUN mode, no root privileges, no account changes.
 
 ---
 
@@ -37,6 +37,7 @@ cd macos-chatgpt-split-proxy
 
 ./install.sh                          # 默认本地代理 127.0.0.1:8080
 ./install.sh --proxy 127.0.0.1:7897   # Clash Verge 等换端口
+./install.sh --with-watchdog          # 顺带装「代理看门狗」，桌面端裸启动时自动恢复
 ./diagnose.sh                         # 一键体检，看看哪一环断了
 ```
 
@@ -55,6 +56,8 @@ cd macos-chatgpt-split-proxy
 | `~/Library/LaunchAgents/local.pac-server.plist` | 常驻 PAC 文件服务器（`python3 -m http.server 8899`），开机自启 |
 | `~/Desktop/ChatGPT代理启动.command` | 带代理启动 ChatGPT 桌面端 |
 | 系统「自动代理配置」 | 指向 `http://127.0.0.1:8899/split.pac` |
+| `~/Library/Application Support/codex-proxy-guard/guard.sh` | **（可选）**代理看门狗脚本 |
+| `~/Library/LaunchAgents/local.codex-proxy-guard.plist` | **（可选）**每 60 秒跑一次看门狗 |
 
 ## 原理：为什么非得这么绕
 
@@ -134,11 +137,62 @@ Codex/ChatGPT 桌面端会**自动更新内置的 core**（比如 26.1021 → 26
 
 **结论：桌面端一旦出现连不上，先退出、用启动器重开，而不是去折腾代理客户端。**
 
+## 代理看门狗（可选组件）
+
+上一节那个"桌面端自更新后裸启动"的坑，手动解法是退出重开。想让它自动恢复，就装看门狗：
+
+```bash
+./install.sh --with-watchdog      # 装主方案 + 看门狗
+./install.sh --watchdog-only      # 已经装过主方案，只补看门狗
+```
+
+它每 60 秒检查一次，按下表处理：
+
+| 情况 | 处理 |
+|---|---|
+| 桌面端没在运行 | 什么都不做 |
+| 桌面端带着代理 | 什么都不做 |
+| 桌面端裸启动，且已存活 ≥ 120 秒 | 先确认本地代理端口通，再用桌面启动器带代理重启一次 |
+| 30 分钟内已经重启过 3 次 | 停手并记日志（避免无限重启），需要人工介入 |
+
+装的位置：
+
+| 路径 | 作用 |
+|---|---|
+| `~/Library/Application Support/codex-proxy-guard/guard.sh` | 看门狗脚本 |
+| `~/Library/LaunchAgents/local.codex-proxy-guard.plist` | `StartInterval 60`，后台跑 |
+| `~/Library/Logs/codex-proxy-guard.log` | 日志 |
+
+体检与手动操作：
+
+```bash
+# 单次体检：退出码 0=健康 1=裸启动 2=桌面端没运行
+"$HOME/Library/Application Support/codex-proxy-guard/guard.sh" --check
+
+# 看它干了什么
+tail -f ~/Library/Logs/codex-proxy-guard.log
+```
+
+只卸看门狗（保留主方案）：
+
+```bash
+launchctl bootout gui/$(id -u)/local.codex-proxy-guard
+rm -f ~/Library/LaunchAgents/local.codex-proxy-guard.plist
+rm -rf "$HOME/Library/Application Support/codex-proxy-guard"
+```
+
+资源占用：每轮约 6ms，非常驻、不占常驻内存。
+
+两个实现细节（也是实测踩出来的坑）：
+
+- macOS 的 `ps` **没有 `etimes` 关键字**（那是 GNU/Linux 的），算进程存活时间要用 `ps -o etime=` 自己换算成秒；
+- `ps e` 对部分系统二进制（比如 `/bin/sleep`）**读不到环境变量**，所以判断"有没有带代理"必须用**双信号**：环境变量可见就看 `HTTP_PROXY`，读不到就退回命令行里的 `--proxy-server=`。只看环境变量会出现"明明带了代理却报警"的假象。
+
 ## 常见症状 → 处理
 
 | 症状 | 原因 | 处理 |
 |---|---|---|
-| 桌面端一直转圈 / `Reconnecting` / `request timed out` | 实例是裸启动的（没带代理环境） | 退出后用桌面启动器重开；`codex doctor` 看 `proxy env vars` 有没有值 |
+| 桌面端一直转圈 / `Reconnecting` / `request timed out` | 实例是裸启动的（没带代理环境） | 退出后用桌面启动器重开；`codex doctor` 看 `proxy env vars` 有没有值。装了看门狗则会自动恢复 |
 | 桌面端点了没反应 | 残留进程占单实例锁 | `pkill -15 -f '/Applications/ChatGPT.app'; sleep 3; pkill -9 -f '/Applications/ChatGPT.app'` |
 | 网页能开、桌面端不行 | 只配了 PAC，桌面端不吃 PAC | 用桌面启动器启动 |
 | ChatGPT 网页打不开 | Safari 不认 PAC | 换 Chrome |
@@ -168,6 +222,7 @@ Codex/ChatGPT 桌面端会**自动更新内置的 core**（比如 26.1021 → 26
 - PAC 服务器依赖 `python3`（macOS 自带的 `/usr/bin/python3` 若未安装，执行 `xcode-select --install`）。
 - 需要手动连代理客户端节点；本方案不代替代理客户端本身。
 - 极少数客户端的本地端口会变，用 `lsof -nP -iTCP -sTCP:LISTEN` 或 `diagnose.sh` 确认。
+- 看门狗重启桌面端时，**桌面端里未保存的内容会丢**（应用被重启的固有限制）。介意就别装看门狗，改成手动退出重开。
 
 ## 安全与合规
 

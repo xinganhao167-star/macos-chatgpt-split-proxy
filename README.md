@@ -2,6 +2,25 @@
 
 保留系统 PAC 供浏览器分流，使用桌面启动器为 ChatGPT 主进程和 Codex 子进程提供同一个本地 HTTP 代理。不使用 TUN、全局代理或网络扩展。安装脚本会修改 macOS 网络服务的自动代理配置；先用 `--dry-run` 查看计划。
 
+## 第一次使用
+
+需要 macOS、已安装的 ChatGPT 桌面 App，以及一个正在运行的**本地 HTTP 代理**。下面以代理地址 `127.0.0.1:8080` 为例；如你的代理客户端使用其他端口，请替换安装命令中的地址。
+
+```bash
+git clone https://github.com/xinganhao167-star/macos-chatgpt-split-proxy.git
+cd macos-chatgpt-split-proxy
+./install.sh --proxy 127.0.0.1:8080 --with-watchdog --dry-run
+./install.sh --proxy 127.0.0.1:8080 --with-watchdog
+```
+
+`--dry-run` 只显示计划；第二次运行会修改系统自动代理设置，并安装默认**只观察、不重启**的看门狗。请先确认输出中的端口和 PAC 地址符合预期。若 ChatGPT 已运行，等当前 Codex 任务结束后在应用内手动退出，再双击桌面的「ChatGPT代理启动.command」；不要为了安装强制结束正在运行的任务。随后运行：
+
+```bash
+./diagnose.sh
+```
+
+正常情况下，本地代理与 PAC 分别显示 `LOCAL_OK`、`PAC_OK`；应用启动后进程配置可显示 `CONFIG_OK`。诊断始终把实际桌面 WebSocket 状态写为 `WEBSOCKET_UNKNOWN`；这不是安装失败。若需要撤销，请看下方的[卸载与回滚](#卸载与回滚)。脚本不会自动开启 TUN 或全局代理。
+
 ## 安装与更新
 
 ```bash
@@ -71,6 +90,8 @@ for f in *.sh; do bash -n "$f" || exit 1; done
 ```
 
 测试使用临时 HOME 和命令替身，不改变真实网络设置。它覆盖 PAC 域名规则、自定义端口、重复安装与卸载恢复、失败回滚、异常进程状态、诊断失败/超时及自动恢复限制。替身测试**不能证明真实 Codex WebSocket 故障已修复**。
+
+[GitHub Actions](https://github.com/xinganhao167-star/macos-chatgpt-split-proxy/actions) 在 `main` 更新和拉取请求上运行同样的模拟测试与 Shell 语法检查；绿色结果只代表这些自动化检查通过，不代表真实 macOS 网络设置或 Codex 长连接已验收。
 
 真实 Mac 人工验收清单：
 

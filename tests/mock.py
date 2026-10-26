@@ -28,6 +28,10 @@ elif name == "networksetup":
         state["pac"][args[1]]["url"] = args[2]
         save()
     elif args[0] == "-setautoproxystate":
+        if os.getenv("MOCK_FAIL_NETWORK") == "1" and not state.get("network_failed"):
+            state["network_failed"] = True
+            save()
+            sys.exit(1)
         state["pac"][args[1]]["enabled"] = "Yes" if args[2].lower() in ("on", "yes") else "No"
         save()
 elif name == "launchctl":

@@ -93,6 +93,14 @@ class ProxyTests(unittest.TestCase):
         self.assertFalse((self.home / "Library/Application Support/chatgpt-split-proxy/config").exists())
         self.assertEqual(json.loads(self.state.read_text())["pac"]["Wi-Fi"]["url"], "http://old.example/proxy.pac")
 
+    def test_network_write_failure_rolls_back_all_services(self):
+        result = self.run_script("install.sh", "--proxy", "127.0.0.1:7897", MOCK_FAIL_NETWORK="1")
+        self.assertNotEqual(result.returncode, 0)
+        pac = json.loads(self.state.read_text())["pac"]
+        self.assertEqual(pac["Wi-Fi"], {"url": "http://old.example/proxy.pac", "enabled": "Yes"})
+        self.assertEqual(pac["USB 10/100/1000 LAN"], {"url": "", "enabled": "No"})
+        self.assertFalse((self.home / "Library/Application Support/chatgpt-split-proxy/config").exists())
+
     def test_guard_states_and_safety(self):
         self.install("--proxy", "127.0.0.1:7897", "--with-watchdog")
         self.assertIn("ABSENT", self.run_script("guard.sh", "--check").stdout)

@@ -91,7 +91,7 @@ for f in *.sh; do bash -n "$f" || exit 1; done
 
 测试使用临时 HOME 和命令替身，不改变真实网络设置。它覆盖 PAC 域名规则、自定义端口、重复安装与卸载恢复、失败回滚、异常进程状态、诊断失败/超时及自动恢复限制。替身测试**不能证明真实 Codex WebSocket 故障已修复**。
 
-[GitHub Actions](https://github.com/xinganhao167-star/macos-chatgpt-split-proxy/actions) 在提交和拉取请求上运行同样的模拟测试与 Shell 语法检查；绿色结果只代表这些自动化检查通过，不代表真实 macOS 网络设置或 Codex 长连接已验收。
+[GitHub Actions](https://github.com/xinganhao167-star/macos-chatgpt-split-proxy/actions) 在 `main` 更新和拉取请求上运行同样的模拟测试与 Shell 语法检查；绿色结果只代表这些自动化检查通过，不代表真实 macOS 网络设置或 Codex 长连接已验收。
 
 真实 Mac 人工验收清单：
 

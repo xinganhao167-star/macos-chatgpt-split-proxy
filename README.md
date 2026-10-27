@@ -36,7 +36,7 @@ cd macos-chatgpt-split-proxy
 
 安装器首次修改每个网络服务前记录其 PAC URL 与启用状态。服务名中的空格会完整保留。重复安装不会覆盖原始备份。安装发生错误时会尝试恢复本次改动并报告失败；如果旧版安装没有保存原 PAC，无法推断安装前的值，卸载时会保留该服务的 PAC 与服务器并提醒手工处理。
 
-日常使用：先连接本地 HTTP 代理，再在 Chrome 中访问 [ChatGPT](https://chatgpt.com)；桌面端用 `~/Desktop/ChatGPT代理启动.command` 打开。启动器在代理不可用时拒绝启动；若 ChatGPT 已运行，它会提示你在应用内**手动退出**，不会终止现有进程或 Codex 任务。网页 PAC 仍对 OpenAI/ChatGPT 相关域名代理，其余域名直连；`chatgpt.com` 与 `openai.com` 根域名也在规则中。
+日常使用：先连接本地 HTTP 代理，再在 Chrome 中访问 [ChatGPT](https://chatgpt.com) 或 [X](https://x.com)；桌面端用 `~/Desktop/ChatGPT代理启动.command` 打开。启动器在代理不可用时拒绝启动；若 ChatGPT 已运行，它会提示你在应用内**手动退出**，不会终止现有进程或 Codex 任务。网页 PAC 会把 OpenAI/ChatGPT 域名及 X 网页所需的 `x.com`、`twitter.com`、`t.co`、`twimg.com` 域名交给本地代理，其余域名直连。`chatgpt.com`、`openai.com` 和 `x.com` 根域名都包含在规则中。
 
 ## 看门狗与安全恢复
 
@@ -96,7 +96,7 @@ for f in *.sh; do bash -n "$f" || exit 1; done
 真实 Mac 人工验收清单：
 
 1. 在没有正在执行的 Codex 任务时，记录各网络服务 `networksetup -getautoproxyurl "服务名"` 和当前 PAC；先运行 `./install.sh --dry-run`，确认没有目录或网络变更。
-2. 用实际本地代理端口安装，确认 `config`、PAC 返回内容及启动器一致；Chrome 访问 `chatgpt.com`，同时确认普通国内站点直连正常。
+2. 用实际本地代理端口安装，确认 `config`、PAC 返回内容及启动器一致；Chrome 访问 `chatgpt.com` 和 `x.com`，确认 X 登录、时间线、图片/视频及 `t.co` 链接可用，同时确认普通国内站点直连正常。
 3. 在应用中手动退出后用启动器打开；查看 `./diagnose.sh` 中主进程、Codex 子进程、代理端口和 API 四层结果。用应用内实际 Codex 任务观察长连接一段时间，记录出现 Reconnecting 的时间和日志。
 4. 在有 Codex 任务运行时再次点启动器、运行默认看门狗，确认它们只提示/记录，不终止进程。模拟代理断开、启动器缺失和应用未运行，核对 `BAD/UNKNOWN/ABSENT`。
 5. 仅在有意测试时开启 `--auto-recover`；确认应用运行中绝不重启，应用未运行时最多启动一次，30 分钟内不会重复启动。

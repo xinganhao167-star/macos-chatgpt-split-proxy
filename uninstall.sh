@@ -10,9 +10,11 @@ LAUNCHER="$HOME/Desktop/ChatGPT代理启动.command"
 AGENT_PLIST="$HOME/Library/LaunchAgents/local.pac-server.plist"
 GUARD_PLIST="$HOME/Library/LaunchAgents/local.codex-proxy-guard.plist"
 GUARD_DIR="$HOME/Library/Application Support/codex-proxy-guard"
+BRIDGE_PLIST="$HOME/Library/LaunchAgents/local.split-proxy-bridge.plist"
+BRIDGE_DIR="$CONFIG_DIR/bridge"
 [[ "$(uname)" == Darwin ]] || { echo "仅支持 macOS" >&2; exit 1; }
 if ! load_config; then
-  if [[ ! -e "$AGENT_PLIST" && ! -e "$GUARD_PLIST" && ! -e "$PAC_FILE" && ! -e "$LAUNCHER" ]]; then
+  if [[ ! -e "$AGENT_PLIST" && ! -e "$GUARD_PLIST" && ! -e "$BRIDGE_PLIST" && ! -e "$PAC_FILE" && ! -e "$LAUNCHER" ]]; then
     echo "本方案已卸载，无需重复操作。"
     exit 0
   fi
@@ -44,6 +46,9 @@ for file in "$BACKUP_DIR"/[0-9]*; do
   networksetup -setautoproxystate "$svc" "$previous_state"
   echo "已恢复 $svc 的原 PAC 状态"
 done
+launchctl bootout "gui/$(id -u)/local.split-proxy-bridge" 2>/dev/null || true
+rm -f "$BRIDGE_PLIST"
+rm -rf "$BRIDGE_DIR"
 launchctl bootout "gui/$(id -u)/local.codex-proxy-guard" 2>/dev/null || true
 rm -f "$GUARD_PLIST" "$GUARD_DIR/guard.sh" "$GUARD_DIR/common.sh"
 if [[ "$KEEP_SERVER" == 0 ]]; then

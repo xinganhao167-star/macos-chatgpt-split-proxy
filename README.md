@@ -2,6 +2,8 @@
 
 保留系统 PAC 供浏览器分流，使用桌面启动器为 ChatGPT 主进程和 Codex 子进程提供同一个本地 HTTP 代理。不使用 TUN、全局代理或网络扩展。安装脚本会修改 macOS 网络服务的自动代理配置；先用 `--dry-run` 查看计划。
 
+若上游代理同时提供 HTTP 与 SOCKS5 两个入站，建议加 `--with-bridge`：桌面端改走 SOCKS5，可避免 HTTP 入站在该负载下占满一个核（见下文[桌面端为什么要走本地桥](#桌面端为什么要走本地桥实测结论)）。
+
 ## 第一次使用
 
 需要 macOS、已安装的 ChatGPT 桌面 App，以及一个正在运行的**本地 HTTP 代理**。下面以代理地址 `127.0.0.1:8080` 为例；如你的代理客户端使用其他端口，请替换安装命令中的地址。
@@ -20,6 +22,29 @@ cd macos-chatgpt-split-proxy
 ```
 
 正常情况下，本地代理与 PAC 分别显示 `LOCAL_OK`、`PAC_OK`；应用启动后进程配置可显示 `CONFIG_OK`。诊断始终把实际桌面 WebSocket 状态写为 `WEBSOCKET_UNKNOWN`；这不是安装失败。若需要撤销，请看下方的[卸载与回滚](#卸载与回滚)。脚本不会自动开启 TUN 或全局代理。
+
+## 桌面端为什么要走本地桥（实测结论）
+
+ChatGPT 桌面端直接连**HTTP 代理入站**（示例中的 `8080`）时，代理进程会持续占满一个核、机器发烫；
+同一份负载改走**SOCKS5 入站**（`1080`）后几乎不占 CPU。同一台机器、同一个应用版本、相近的连接数
+（30 对 35–40），唯一差别是入站类型：
+
+| 桌面端入口 | 实际入站 | 代理进程平均 CPU | 稳态 |
+|---|---|---|---|
+| `127.0.0.1:8080` | HTTP | 96.2%（峰值 99.3%） | 约 99% 持续不掉 |
+| `127.0.0.1:8081` → `1080` | SOCKS5 | 1.4%（峰值 16.3%，仅启动瞬间） | 0.1–0.2% |
+
+因此这不是「长连接太多」，而是 HTTP 入站在桌面端该负载下的实现问题。`--with-bridge` 会安装一个只监听
+`127.0.0.1` 的本地 HTTP→SOCKS5 桥（`bridge/http2socks.py`，LaunchAgent `local.split-proxy-bridge`），
+桌面端指向桥，浏览器 PAC 仍指向原来的 HTTP 端口。**不改 VPN 模式、不加 TUN、不改路由。**
+
+```bash
+./install.sh --with-bridge --socks 127.0.0.1:1080            # 桥默认监听 8081
+./install.sh --with-bridge --bridge-port 8082 --socks 127.0.0.1:1080
+```
+
+省略 `--with-bridge` 时行为不变：桌面端直接使用 `--proxy` 指定的 HTTP 代理。已启用桥后再执行
+`./install.sh`（不带动桥参数）会沿用配置里的桥端口。
 
 ## 安装与更新
 
@@ -63,6 +88,8 @@ tail -f "$HOME/Library/Logs/codex-proxy-guard.log"
 | 标记 | 含义 |
 |---|---|
 | `LOCAL_OK/BAD` | 本地 HTTP 代理 TCP 端口 |
+| `BRIDGE_OK/BAD` | 本地桥是否在监听（仅启用桥时输出） |
+| `SOCKS_OK/BAD` | 桥的上游 SOCKS5 是否可达（仅启用桥时输出） |
 | `PAC_OK/UNKNOWN` | PAC 服务器与配置端口 |
 | `SYSTEM_PAC_OK/UNKNOWN` | macOS 当前自动代理指向 |
 | `API_REACHABLE/UNKNOWN` | 经代理请求 ChatGPT 后端的 HTTP 层；403 也仅代表 HTTP 有响应 |
@@ -95,7 +122,7 @@ for f in *.sh; do bash -n "$f" || exit 1; done
 
 真实 Mac 人工验收清单：
 
-1. 在没有正在执行的 Codex 任务时，记录各网络服务 `networksetup -getautoproxyurl "服务名"` 和当前 PAC；先运行 `./install.sh --dry-run`，确认没有目录或网络变更。
+1. 在没有正在执行的 Codex 任务时，记录各网络服务 `networksetup -getautoproxyurl "服务名"` 和当前 PAC；先运行 `./install.sh --dry-run`，确认没有目录或网络变更。启用桥时另需确认 `./diagnose.sh` 输出 `BRIDGE_OK` 与 `SOCKS_OK`，并观察桌面端运行时的代理进程 CPU（`ps -o time= -p <pid>` 取两次差值）不随使用持续上升。
 2. 用实际本地代理端口安装，确认 `config`、PAC 返回内容及启动器一致；Chrome 访问 `chatgpt.com` 和 `x.com`，确认 X 登录、时间线、图片/视频及 `t.co` 链接可用，同时确认普通国内站点直连正常。
 3. 在应用中手动退出后用启动器打开；查看 `./diagnose.sh` 中主进程、Codex 子进程、代理端口和 API 四层结果。用应用内实际 Codex 任务观察长连接一段时间，记录出现 Reconnecting 的时间和日志。
 4. 在有 Codex 任务运行时再次点启动器、运行默认看门狗，确认它们只提示/记录，不终止进程。模拟代理断开、启动器缺失和应用未运行，核对 `BAD/UNKNOWN/ABSENT`。

@@ -38,7 +38,7 @@ PIDS="$(main_pid)"
 [[ -z "$PIDS" ]] && {
   [[ "$MODE" == --auto-recover ]] || report "ABSENT 桌面端未运行" 2
   [[ -x "$LAUNCHER" ]] || report "UNKNOWN 启动器不存在或不可执行" 3
-  proxy_reachable || report "UNKNOWN 本地代理不可用" 3
+  client_reachable || report "UNKNOWN 桌面端入口不可用（${CLIENT_URL}）" 3
   mkdir -p "$STATE_DIR"
   if ! mkdir "$STATE_DIR/lock" 2>/dev/null; then
     report "UNKNOWN 已有恢复检查运行" 3
@@ -58,7 +58,7 @@ PIDS="$(main_pid)"
 STATE=0
 process_proxy_state "$PIDS" main || STATE=$?
 case "$STATE" in
-  1) report "BAD 主进程代理配置缺失或与 $PROXY_URL 不一致；请手动退出后用启动器重开" 1 ;;
+  1) report "BAD 主进程代理配置缺失或与 $CLIENT_URL 不一致；请手动退出后用启动器重开" 1 ;;
   2) report "UNKNOWN 无法读取主进程完整代理环境" 3 ;;
 esac
 CHILDREN="$(codex_children "$PIDS")"
@@ -71,5 +71,5 @@ while IFS= read -r child; do
     2) report "UNKNOWN 无法读取 Codex 子进程 $child 的代理环境" 3 ;;
   esac
 done <<< "$CHILDREN"
-proxy_reachable || report "BAD 进程配置正确，但本地代理不可达" 1
+client_reachable || report "BAD 进程配置正确，但桌面端入口 $CLIENT_URL 不可达" 1
 report "CONFIG_OK 主进程及 Codex 子进程代理配置一致，本地代理可达；API/WebSocket 状态未知" 0

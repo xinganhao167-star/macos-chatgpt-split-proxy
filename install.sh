@@ -8,18 +8,22 @@ PAC_FILE="$PAC_DIR/split.pac"
 LAUNCHER="$HOME/Desktop/ChatGPT代理启动.command"
 AGENT_PLIST="$HOME/Library/LaunchAgents/local.pac-server.plist"
 GUARD_PLIST="$HOME/Library/LaunchAgents/local.codex-proxy-guard.plist"
+BRIDGE_PLIST="$HOME/Library/LaunchAgents/local.split-proxy-bridge.plist"
 GUARD_DIR="$HOME/Library/Application Support/codex-proxy-guard"
 BACKUP_DIR="$CONFIG_DIR/pac-backup"
-DRY=0 WATCHDOG=0 WATCHDOG_ONLY=0 AUTO=0
-REQUEST_PROXY= REQUEST_PAC=
+DRY=0 WATCHDOG=0 WATCHDOG_ONLY=0 AUTO=0 BRIDGE=0
+REQUEST_PROXY= REQUEST_PAC= REQUEST_BRIDGE= REQUEST_SOCKS=
 usage() {
-  echo "用法: ./install.sh [--proxy 127.0.0.1:PORT] [--pac-port PORT] [--with-watchdog] [--watchdog-only] [--auto-recover] [--dry-run]"
+  echo "用法: ./install.sh [--proxy 127.0.0.1:PORT] [--pac-port PORT] [--with-bridge [--bridge-port PORT] [--socks 127.0.0.1:1080]] [--with-watchdog] [--watchdog-only] [--auto-recover] [--dry-run]"
 }
 die() { echo "安装失败：$*" >&2; exit 1; }
 while (($#)); do
   case "$1" in
     --proxy) (($# >= 2)) || die "--proxy 缺少值"; REQUEST_PROXY="$2"; shift 2 ;;
     --pac-port) (($# >= 2)) || die "--pac-port 缺少值"; REQUEST_PAC="$2"; shift 2 ;;
+    --with-bridge) BRIDGE=1; shift ;;
+    --bridge-port) (($# >= 2)) || die "--bridge-port 缺少值"; REQUEST_BRIDGE="$2"; shift 2 ;;
+    --socks) (($# >= 2)) || die "--socks 缺少值"; REQUEST_SOCKS="$2"; shift 2 ;;
     --with-watchdog) WATCHDOG=1; shift ;;
     --watchdog-only) WATCHDOG=1; WATCHDOG_ONLY=1; shift ;;
     --auto-recover) AUTO=1; WATCHDOG=1; shift ;;
@@ -33,6 +37,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
   load_config || die "现有配置无效，请先检查 $CONFIG_FILE"
 else
   PROXY_HOST=127.0.0.1 PROXY_PORT=8080 PAC_PORT=8899
+  BRIDGE_PORT= SOCKS_HOST= SOCKS_PORT=
 fi
 if [[ -n "$REQUEST_PROXY" ]]; then
   [[ "$REQUEST_PROXY" =~ ^(127\.0\.0\.1|localhost):([0-9]{1,5})$ ]] || die "代理须为本机 host:port，例如 127.0.0.1:7897"
@@ -40,6 +45,23 @@ if [[ -n "$REQUEST_PROXY" ]]; then
 fi
 [[ -z "$REQUEST_PAC" ]] || PAC_PORT="$REQUEST_PAC"
 valid_port "$PROXY_PORT" && valid_port "$PAC_PORT" || die "端口必须为 1–65535"
+if [[ -n "$REQUEST_SOCKS" ]]; then
+  [[ "$REQUEST_SOCKS" =~ ^(127\.0\.0\.1|localhost):([0-9]{1,5})$ ]] || die "--socks 须为本机 host:port，例如 127.0.0.1:1080"
+  SOCKS_HOST="${BASH_REMATCH[1]}" SOCKS_PORT="${BASH_REMATCH[2]}"
+fi
+if [[ -n "$REQUEST_BRIDGE" ]]; then
+  valid_port "$REQUEST_BRIDGE" || die "--bridge-port 端口必须为 1–65535"
+  BRIDGE_PORT="$REQUEST_BRIDGE"
+  BRIDGE=1
+fi
+[[ -z "$BRIDGE_PORT" ]] || BRIDGE=1
+if [[ "$BRIDGE" == 1 ]]; then
+  BRIDGE_PORT="${BRIDGE_PORT:-8081}"
+  SOCKS_HOST="${SOCKS_HOST:-127.0.0.1}"
+  SOCKS_PORT="${SOCKS_PORT:-1080}"
+  SOCKS_URL="$SOCKS_HOST:$SOCKS_PORT"
+  [[ "$BRIDGE_PORT" != "$PROXY_PORT" ]] || die "桥端口不能与代理上游端口相同（${PROXY_PORT}）"
+fi
 [[ "$WATCHDOG_ONLY" == 0 || ( -z "$REQUEST_PROXY" && -z "$REQUEST_PAC" ) ]] || die "--watchdog-only 使用已安装配置，不能改端口"
 [[ "$WATCHDOG_ONLY" == 0 || -f "$CONFIG_FILE" ]] || die "尚未安装主方案"
 [[ "$WATCHDOG" == 1 || ! -f "$GUARD_PLIST" ]] || WATCHDOG=1
@@ -47,6 +69,11 @@ PROXY_URL="http://$PROXY_HOST:$PROXY_PORT"
 PAC_URL="http://127.0.0.1:$PAC_PORT/split.pac"
 if [[ "$DRY" == 1 ]]; then
   echo "[dry-run] 代理 ${PROXY_URL}；PAC ${PAC_URL}；看门狗=${WATCHDOG}；仅在应用未运行时自动启动=$AUTO"
+  if [[ "$BRIDGE" == 1 ]]; then
+    echo "[dry-run] 本地桥：127.0.0.1:$BRIDGE_PORT → SOCKS ${SOCKS_URL}（桌面端入口 http://127.0.0.1:${BRIDGE_PORT}，浏览器仍用 ${PROXY_URL}）"
+  else
+    echo "[dry-run] 未启用本地桥：桌面端直接使用 $PROXY_URL"
+  fi
   echo "[dry-run] 将更新 ${CONFIG_FILE}、PAC、启动器、LaunchAgent；保存各网络服务原 PAC 并设置 $PAC_URL"
   exit 0
 fi
@@ -84,6 +111,8 @@ rollback() {
   [[ -f "$AGENT_PLIST" ]] && launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST" 2>/dev/null || true
   launchctl bootout "gui/$(id -u)/local.codex-proxy-guard" 2>/dev/null || true
   [[ -f "$GUARD_PLIST" ]] && launchctl bootstrap "gui/$(id -u)" "$GUARD_PLIST" 2>/dev/null || true
+  launchctl bootout "gui/$(id -u)/local.split-proxy-bridge" 2>/dev/null || true
+  [[ -f "$BRIDGE_PLIST" ]] && launchctl bootstrap "gui/$(id -u)" "$BRIDGE_PLIST" 2>/dev/null || true
   rm -rf "$TXN"
   echo "安装失败，已尝试恢复本次修改；请检查 PAC 和 LaunchAgent 状态。" >&2
   exit 1
@@ -109,12 +138,46 @@ if [[ "$WATCHDOG_ONLY" == 0 ]]; then
   (( n > 0 )) || die "没有找到网络服务，未修改系统"
   mkdir -p "$CONFIG_DIR" "$PAC_DIR" "$HOME/Desktop" "$HOME/Library/LaunchAgents" "$BACKUP_DIR"
   for f in "$CONFIG_FILE" "$CONFIG_DIR/common.sh" "$PAC_FILE" "$LAUNCHER" "$AGENT_PLIST"; do backup_file "$f"; done
-  printf 'PROXY_HOST=%s\nPROXY_PORT=%s\nPAC_PORT=%s\n' "$PROXY_HOST" "$PROXY_PORT" "$PAC_PORT" > "$CONFIG_FILE"
+  {
+    printf 'PROXY_HOST=%s\nPROXY_PORT=%s\nPAC_PORT=%s\n' "$PROXY_HOST" "$PROXY_PORT" "$PAC_PORT"
+    if [[ "$BRIDGE" == 1 ]]; then
+      printf 'BRIDGE_PORT=%s\nSOCKS_HOST=%s\nSOCKS_PORT=%s\n' "$BRIDGE_PORT" "$SOCKS_HOST" "$SOCKS_PORT"
+    fi
+  } > "$CONFIG_FILE"
   chmod 600 "$CONFIG_FILE"
   cp "$ROOT/common.sh" "$CONFIG_DIR/common.sh"
   sed "s/PROXY 127\\.0\\.0\\.1:8080/PROXY $PROXY_HOST:$PROXY_PORT/g" "$ROOT/split.pac" > "$PAC_FILE"
   cp "$ROOT/launcher.sh" "$LAUNCHER"
   chmod +x "$LAUNCHER"
+  backup_file "$CONFIG_DIR/bridge/http2socks.py"
+  backup_file "$BRIDGE_PLIST"
+  if [[ "$BRIDGE" == 1 ]]; then
+    mkdir -p "$CONFIG_DIR/bridge"
+    cp "$ROOT/bridge/http2socks.py" "$CONFIG_DIR/bridge/http2socks.py"
+    chmod 644 "$CONFIG_DIR/bridge/http2socks.py"
+    cat > "$BRIDGE_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>local.split-proxy-bridge</string>
+<key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>$CONFIG_DIR/bridge/http2socks.py</string><string>--listen</string><string>$BRIDGE_PORT</string><string>--socks</string><string>$SOCKS_URL</string></array>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+<key>StandardOutPath</key><string>/tmp/local.split-proxy-bridge.out</string>
+<key>StandardErrorPath</key><string>/tmp/local.split-proxy-bridge.err</string>
+</dict></plist>
+PLIST
+    launchctl bootout "gui/$(id -u)/local.split-proxy-bridge" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$BRIDGE_PLIST"
+    bridge_up=0
+    for attempt in 1 2 3 4 5; do
+      if nc -z -G 1 127.0.0.1 "$BRIDGE_PORT" >/dev/null 2>&1; then bridge_up=1; break; fi
+      sleep 1
+    done
+    [[ "$bridge_up" == 1 ]] || { echo "本地桥未监听 127.0.0.1:${BRIDGE_PORT}，取消本次安装" >&2; false; }
+  else
+    launchctl bootout "gui/$(id -u)/local.split-proxy-bridge" 2>/dev/null || true
+    rm -f "$BRIDGE_PLIST"
+  fi
   cat > "$AGENT_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -179,4 +242,8 @@ PLIST
 fi
 trap - ERR
 rm -rf "$TXN"
-echo "安装完成：代理 ${PROXY_URL}，PAC ${PAC_URL}；看门狗=${WATCHDOG}；安全自动启动=$AUTO"
+if [[ "$BRIDGE" == 1 ]]; then
+  echo "安装完成：桌面端入口 http://127.0.0.1:${BRIDGE_PORT} → SOCKS ${SOCKS_URL}；浏览器 PAC ${PAC_URL}（上游 ${PROXY_URL}）；看门狗=${WATCHDOG}；安全自动启动=$AUTO"
+else
+  echo "安装完成：代理 ${PROXY_URL}，PAC ${PAC_URL}；看门狗=${WATCHDOG}；安全自动启动=$AUTO"
+fi

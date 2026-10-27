@@ -162,6 +162,42 @@ class ProxyTests(unittest.TestCase):
         result = self.run_script("diagnose.sh", **env, SPLIT_PROXY_DOCTOR_TIMEOUT="1")
         self.assertIn("DOCTOR_UNKNOWN 诊断超时", result.stdout)
 
+    def test_bridge_install_wires_desktop_entry_only(self):
+        self.install("--proxy", "127.0.0.1:8080", "--with-bridge", "--socks", "127.0.0.1:1080")
+        config = (self.home / "Library/Application Support/chatgpt-split-proxy/config").read_text()
+        self.assertIn("BRIDGE_PORT=8081", config)
+        self.assertIn("SOCKS_PORT=1080", config)
+        bridge = self.home / "Library/Application Support/chatgpt-split-proxy/bridge/http2socks.py"
+        self.assertTrue(bridge.exists())
+        plist = self.home / "Library/LaunchAgents/local.split-proxy-bridge.plist"
+        with plist.open("rb") as handle:
+            args = plistlib.load(handle)["ProgramArguments"]
+        self.assertIn("--listen", args)
+        self.assertIn("8081", args)
+        self.assertIn("127.0.0.1:1080", args)
+        # 桌面端走桥；浏览器 PAC 仍指向 HTTP 上游
+        self.assertIn('"$CLIENT_URL"', (self.home / "Desktop/ChatGPT代理启动.command").read_text())
+        self.assertIn("PROXY 127.0.0.1:8080", (self.home / "proxy-pac/split.pac").read_text())
+        self.run_script("uninstall.sh")
+        self.assertFalse(plist.exists())
+        self.assertFalse(bridge.exists())
+
+    def test_bridge_absent_by_default(self):
+        self.install("--proxy", "127.0.0.1:7897")
+        config = (self.home / "Library/Application Support/chatgpt-split-proxy/config").read_text()
+        self.assertNotIn("BRIDGE_PORT", config)
+        self.assertFalse((self.home / "Library/LaunchAgents/local.split-proxy-bridge.plist").exists())
+
+    def test_bridge_argument_parsing(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("http2socks", ROOT / "bridge/http2socks.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        args = module.parse_args(["--listen", "9001", "--socks", "127.0.0.1:1081"])
+        self.assertEqual((args.listen, args.socks), (9001, "127.0.0.1:1081"))
+        args = module.parse_args(["9002", "127.0.0.1:1082"])
+        self.assertEqual((args.listen, args.socks), (9002, "127.0.0.1:1082"))
+
     def test_pac_domain_rules(self):
         source = (ROOT / "split.pac").read_text()
         domains = re.findall(r'^\s+"([^"]+)",?$', source, re.M)
@@ -177,7 +213,7 @@ class ProxyTests(unittest.TestCase):
             self.assertEqual(route(host), "DIRECT", host)
 
     def test_shell_syntax(self):
-        for script in ROOT.glob("*.sh"):
+        for script in list(ROOT.glob("*.sh")) + list(ROOT.glob("relay/*.sh")):
             result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, script.name + result.stderr)
 

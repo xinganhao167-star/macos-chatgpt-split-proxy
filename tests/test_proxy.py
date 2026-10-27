@@ -168,9 +168,12 @@ class ProxyTests(unittest.TestCase):
         self.assertTrue(domains)
         def route(host):
             return "PROXY" if any(fnmatch.fnmatchcase(host.lower(), pat) for pat in domains) else "DIRECT"
-        for host in ("chatgpt.com", "openai.com", "api.openai.com", "cdn.oaistatic.com"):
+        for host in ("chatgpt.com", "openai.com", "api.openai.com", "cdn.oaistatic.com",
+                     "x.com", "api.x.com", "twitter.com", "api.twitter.com", "t.co",
+                     "pbs.twimg.com", "video.twimg.com"):
             self.assertEqual(route(host), "PROXY", host)
-        for host in ("example.com", "baidu.com", "notchatgpt.com"):
+        for host in ("example.com", "baidu.com", "notchatgpt.com", "notx.com",
+                     "x.com.example.org", "nottwitter.com", "t.co.example.org"):
             self.assertEqual(route(host), "DIRECT", host)
 
     def test_shell_syntax(self):

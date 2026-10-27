@@ -1,4 +1,4 @@
-// PAC 文件：只有 OpenAI / ChatGPT 相关域名走本地代理，其余全部直连。
+// PAC 文件：只有 OpenAI / ChatGPT 与 X 相关域名走本地代理，其余全部直连。
 //
 // 由 install.sh 自动生成并托管在 http://127.0.0.1:8899/split.pac
 // 重要：必须用 http:// 提供，不能用 file://——Safari / WebKit 会直接忽略 file:// 的 PAC。
@@ -52,6 +52,23 @@ function FindProxyForURL(url, host) {
         }
     }
 
-    // 其余一律直连：国内站点不绕路、不改出口 IP
+    // X 网页、旧版 Twitter 域名、链接跳转和图片/视频资源
+    var xDomains = [
+        "x.com",
+        "*.x.com",
+        "twitter.com",
+        "*.twitter.com",
+        "t.co",
+        "twimg.com",
+        "*.twimg.com"
+    ];
+
+    for (var j = 0; j < xDomains.length; j++) {
+        if (shExpMatch(host, xDomains[j])) {
+            return "PROXY 127.0.0.1:8080";
+        }
+    }
+
+    // 其余一律直连：其他站点不绕路、不改出口 IP
     return "DIRECT";
 }

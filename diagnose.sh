@@ -32,6 +32,18 @@ if [[ "$PAC" == *"PROXY $PROXY_HOST:$PROXY_PORT"* ]]; then
 else
   echo "PAC_UNKNOWN 无法读取 PAC 或规则端口不一致"
 fi
+RELAY_PLIST="/Library/LaunchDaemons/local.chatgpt-sni-relay.plist"
+if [[ -f "$RELAY_PLIST" ]]; then
+  if /usr/bin/nc -z -G 2 127.0.0.1 443 >/dev/null 2>&1; then
+    echo "RELAY_OK SNI 中继在 127.0.0.1:443 监听（接管那条不认代理的长连接）"
+  else
+    echo "RELAY_BAD 中继已安装但 443 未监听；看 /Library/Logs/chatgpt-sni-relay.log"
+  fi
+elif grep -q 'codex-cloud-backend.chatgpt.com' /etc/hosts 2>/dev/null; then
+  echo "RELAY_UNKNOWN /etc/hosts 有该域名，但没找到本项目的中继 plist"
+else
+  echo "RELAY_ABSENT 未安装 SNI 中继；桌面端那条长连接会直连"
+fi
 SYS="$(scutil --proxy 2>/dev/null || true)"
 if [[ "$SYS" == *"ProxyAutoConfigEnable : 1"* && "$SYS" == *"$PAC_URL"* ]]; then
   echo "SYSTEM_PAC_OK 系统自动代理指向本方案"

@@ -11,16 +11,17 @@ GUARD_PLIST="$HOME/Library/LaunchAgents/local.codex-proxy-guard.plist"
 BRIDGE_PLIST="$HOME/Library/LaunchAgents/local.split-proxy-bridge.plist"
 GUARD_DIR="$HOME/Library/Application Support/codex-proxy-guard"
 BACKUP_DIR="$CONFIG_DIR/pac-backup"
-DRY=0 WATCHDOG=0 WATCHDOG_ONLY=0 AUTO=0 BRIDGE=0
+DRY=0 WATCHDOG=0 WATCHDOG_ONLY=0 AUTO=0 BRIDGE=0 RELAY=0
 REQUEST_PROXY= REQUEST_PAC= REQUEST_BRIDGE= REQUEST_SOCKS=
 usage() {
-  echo "用法: ./install.sh [--proxy 127.0.0.1:PORT] [--pac-port PORT] [--with-bridge [--bridge-port PORT] [--socks 127.0.0.1:1080]] [--with-watchdog] [--watchdog-only] [--auto-recover] [--dry-run]"
+  echo "用法: ./install.sh [--proxy 127.0.0.1:PORT] [--pac-port PORT] [--with-bridge [--bridge-port PORT] [--socks 127.0.0.1:1080]] [--with-relay] [--with-watchdog] [--watchdog-only] [--auto-recover] [--dry-run]"
 }
 die() { echo "安装失败：$*" >&2; exit 1; }
 while (($#)); do
   case "$1" in
     --proxy) (($# >= 2)) || die "--proxy 缺少值"; REQUEST_PROXY="$2"; shift 2 ;;
     --pac-port) (($# >= 2)) || die "--pac-port 缺少值"; REQUEST_PAC="$2"; shift 2 ;;
+    --with-relay) RELAY=1; shift ;;
     --with-bridge) BRIDGE=1; shift ;;
     --bridge-port) (($# >= 2)) || die "--bridge-port 缺少值"; REQUEST_BRIDGE="$2"; shift 2 ;;
     --socks) (($# >= 2)) || die "--socks 缺少值"; REQUEST_SOCKS="$2"; shift 2 ;;
@@ -242,6 +243,17 @@ PLIST
 fi
 trap - ERR
 rm -rf "$TXN"
+if [[ "$RELAY" == 1 ]]; then
+  RELAY_PLIST="/Library/LaunchDaemons/local.chatgpt-sni-relay.plist"
+  if [[ -f "$RELAY_PLIST" ]]; then
+    echo "SNI 中继已安装：${RELAY_PLIST}"
+  else
+    echo "SNI 中继需要 root，请自行执行（先看计划可加 --dry-run）："
+    echo "  sudo bash \"$ROOT/relay/setup-root.sh\" --socks ${SOCKS_URL:-127.0.0.1:1080}"
+    echo "  卸载：sudo bash \"$ROOT/relay/teardown-root.sh\""
+    echo "说明：它负责桌面端那条不认代理的长连接；不装的话可能反复重连。"
+  fi
+fi
 if [[ "$BRIDGE" == 1 ]]; then
   echo "安装完成：桌面端入口 http://127.0.0.1:${BRIDGE_PORT} → SOCKS ${SOCKS_URL}；浏览器 PAC ${PAC_URL}（上游 ${PROXY_URL}）；看门狗=${WATCHDOG}；安全自动启动=$AUTO"
 else

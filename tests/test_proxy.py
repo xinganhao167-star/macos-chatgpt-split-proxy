@@ -210,6 +210,17 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(split("[::1]:8080", 80), ("[::1]", 8080))
         self.assertEqual(split("chatgpt.com:443", 443), ("chatgpt.com", 443))
 
+    def test_relay_scripts_dry_run_needs_no_root(self):
+        for script, extra in (("relay/setup-root.sh", "安装"), ("relay/teardown-root.sh", "卸载")):
+            result = subprocess.run(["bash", str(ROOT / script), "--dry-run"],
+                                    capture_output=True, text=True, timeout=30,
+                                    encoding="utf-8", errors="replace")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("[dry-run]", result.stdout)
+            self.assertIn("codex-cloud-backend.chatgpt.com", result.stdout)
+            # dry-run 不允许动 /etc/hosts
+            self.assertNotIn("cat > ", result.stdout)
+
     def test_pac_domain_rules(self):
         source = (ROOT / "split.pac").read_text()
         domains = re.findall(r'^\s+"([^"]+)",?$', source, re.M)

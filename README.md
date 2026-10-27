@@ -4,6 +4,8 @@
 
 若上游代理同时提供 HTTP 与 SOCKS5 两个入站，建议加 `--with-bridge`：桌面端改走 SOCKS5，可避免 HTTP 入站在该负载下占满一个核（见下文[桌面端为什么要走本地桥](#桌面端为什么要走本地桥实测结论)）。
 
+另有可选组件 [SNI 中继](#桌面端那条不走代理的长连接sni-中继)：它需要 root，负责桌面端那条不读任何代理设置的长连接；不装的话桌面端可能反复重连。
+
 ## 第一次使用
 
 需要 macOS、已安装的 ChatGPT 桌面 App，以及一个正在运行的**本地 HTTP 代理**。下面以代理地址 `127.0.0.1:8080` 为例；如你的代理客户端使用其他端口，请替换安装命令中的地址。
@@ -45,6 +47,28 @@ ChatGPT 桌面端直接连**HTTP 代理入站**（示例中的 `8080`）时，�
 
 省略 `--with-bridge` 时行为不变：桌面端直接使用 `--proxy` 指定的 HTTP 代理。已启用桥后再执行
 `./install.sh`（不带动桥参数）会沿用配置里的桥端口。
+
+## 桌面端那条不走代理的长连接（SNI 中继）
+
+ChatGPT 桌面端主进程会对 `codex-cloud-backend.chatgpt.com` 建一条 durable 长连接，它**既不读
+`--proxy-server`，也不读 `HTTP_PROXY/HTTPS_PROXY`**。直连被墙后表现为「一直正在思考 / 不停重连」，
+并不断新起 codex 子进程。启动器给的代理对它无效，只能靠 DNS 把它引回本机。
+
+做法：`/etc/hosts` 把该域名钉到 `127.0.0.1`，由 root 常驻的 `relay/sni-relay.py` 从 TLS ClientHello
+读出 SNI，经本地 SOCKS5（默认 `127.0.0.1:1080`）远程解析建连后双向透传。端到端 TLS 原样转发，
+不做中间人，证书校验不受影响。绑定 443 需要 root，因此**这一步必须你自己在终端执行**。
+
+```bash
+sudo bash relay/setup-root.sh --dry-run     # 先看计划
+sudo bash relay/setup-root.sh               # 装：/etc/hosts 标记块 + LaunchDaemon
+sudo bash relay/teardown-root.sh            # 卸：只删自己的标记块与守护进程
+```
+
+`install.sh --with-relay` 只打印上面的命令，不会提权。装好后 `./diagnose.sh` 会多一行
+`RELAY_OK`；中继日志在 `/Library/Logs/chatgpt-sni-relay.log`，hosts 备份为
+`/etc/hosts.bak-chatgpt-sni-relay*`。安装失败会自动回滚 hosts 与守护进程。
+
+限制：只覆盖 `codex-cloud-backend.chatgpt.com` 这一个域名；app 若新增别的硬编码域名需要再加一条规则。
 
 ## 安装与更新
 
@@ -88,6 +112,7 @@ tail -f "$HOME/Library/Logs/codex-proxy-guard.log"
 | 标记 | 含义 |
 |---|---|
 | `LOCAL_OK/BAD` | 本地 HTTP 代理 TCP 端口 |
+| `RELAY_OK/BAD/ABSENT` | SNI 中继是否在 443 监听（root 安装的可选组件） |
 | `BRIDGE_OK/BAD` | 本地桥是否在监听（仅启用桥时输出） |
 | `SOCKS_OK/BAD` | 桥的上游 SOCKS5 是否可达（仅启用桥时输出） |
 | `PAC_OK/UNKNOWN` | PAC 服务器与配置端口 |
@@ -106,6 +131,8 @@ tail -f "$HOME/Library/Logs/codex-proxy-guard.log"
 ```bash
 ./uninstall.sh
 ```
+
+若装过 SNI 中继，卸载脚本会提醒它仍需单独用 `sudo bash relay/teardown-root.sh` 撤除（root 组件不在用户态卸载范围内）。
 
 卸载会在当前 PAC 仍指向本项目时恢复每个网络服务安装前保存的 URL 和开关；若用户或其他程序已改动 PAC，则保留当前值并提示。旧版安装没有原始备份时，会保留相关 PAC 服务以免留下失效 URL。卸载不会停止 ChatGPT/Codex 进程，不会删除 Codex 会话或配置。重新安装可重复执行。
 

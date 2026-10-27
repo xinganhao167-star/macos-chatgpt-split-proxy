@@ -1,5 +1,26 @@
 # 变更记录
 
+## 2026-10-27（续）
+
+### 新增：SNI 中继正式入库（`relay/`）
+
+桌面端主进程对 `codex-cloud-backend.chatgpt.com` 的 durable 长连接既不读 `--proxy-server`
+也不读代理环境变量，直连被墙会导致「一直正在思考 / 不停重连」并不断新起 codex 子进程。
+中继把该域名经 `/etc/hosts` 引到本机 443，再从 TLS ClientHello 读 SNI、经本地 SOCKS 透传
+（不做中间人，证书校验不受影响）。
+
+- `relay/setup-root.sh`：新增 `--dry-run`、`--domain/--listen/--port/--socks`；
+  `/etc/hosts` 改为**标记块**写入（可整块回滚），会清理早期脚本留下的裸行；
+  安装后校验监听与域名解析，任一步失败自动回滚 hosts 与守护进程。
+- `relay/teardown-root.sh`：新增。停止并删除守护进程与脚本，只删自己的标记块。
+- `install.sh --with-relay`：打印需要 root 的安装命令，不自行提权。
+- `uninstall.sh`：提醒中继属于 root 组件，需单独卸载。
+- `diagnose.sh`：新增 `RELAY_OK / RELAY_BAD / RELAY_UNKNOWN / RELAY_ABSENT` 一行。
+- README 增加该组件的原因、安装、卸载与限制说明。
+
+注意：中继是**单个域名**的补丁，且绑定 443 需要 root；它解决的是「连不上/反复重连」，
+与本文件上一条的本地桥（解决 CPU 占满）是两个不同的问题，两者都需要。
+
 ## 2026-10-27
 
 ### 新增：桌面端改走本地 HTTP→SOCKS 桥（桌面端 CPU 问题）

@@ -60,4 +60,9 @@ if [[ "$KEEP_SERVER" == 0 ]]; then
   rmdir "$CONFIG_DIR" 2>/dev/null || true
 fi
 rm -f "$LAUNCHER"
+RELAY_PLIST="/Library/LaunchDaemons/local.chatgpt-sni-relay.plist"
+if [[ -f "$RELAY_PLIST" ]] || grep -q 'chatgpt-split-proxy relay' /etc/hosts 2>/dev/null; then
+  echo "提醒：SNI 中继仍未卸载（root 安装，不在本脚本范围内）。" >&2
+  echo "      sudo bash \"$ROOT/relay/teardown-root.sh\"" >&2
+fi
 echo "卸载完成。正在运行的 ChatGPT/Codex 未受影响。"

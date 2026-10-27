@@ -63,6 +63,14 @@ async def socks_connect(socks: str, host: str, port: int) -> Tuple[asyncio.Strea
     return r, w
 
 
+def split_hostport(text: str, default_port: int) -> Tuple[str, int]:
+    """拆 host[:port]；没有端口时用默认端口（普通 HTTP 请求常见 http://host/path）。"""
+    host, sep, port = text.rpartition(":")
+    if sep and host and port.isdigit():
+        return host, int(port)
+    return text, default_port
+
+
 async def read_head(reader: asyncio.StreamReader) -> bytes:
     head = b""
     while b"\r\n\r\n" not in head:
@@ -113,8 +121,7 @@ async def handle(cr: asyncio.StreamReader, cw: asyncio.StreamWriter, socks: str,
             return
         method, target = parts[0].upper(), parts[1].decode("latin-1")
         if method == b"CONNECT":
-            host, _, port = target.rpartition(":")
-            port = int(port or 443)
+            host, port = split_hostport(target, 443)
             ur, uw = await socks_connect(socks, host, port)
             cw.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             await cw.drain()
@@ -127,8 +134,7 @@ async def handle(cr: asyncio.StreamReader, cw: asyncio.StreamWriter, socks: str,
                 cw.write(b"HTTP/1.1 400 Bad Request\r\n\r\n")
                 return
             hostport, _, path = restpath.partition("/")
-            host, _, port = hostport.rpartition(":")
-            port = int(port) if port else 80
+            host, port = split_hostport(hostport, 80)
             ur, uw = await socks_connect(socks, host, port)
             newhead = b"\r\n".join([f"{parts[0].decode()} /{path}".encode(), *lines[1:]]) + b"\r\n\r\n"
             uw.write(newhead + rest)

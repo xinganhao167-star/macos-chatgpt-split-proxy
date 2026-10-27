@@ -198,6 +198,18 @@ class ProxyTests(unittest.TestCase):
         args = module.parse_args(["9002", "127.0.0.1:1082"])
         self.assertEqual((args.listen, args.socks), (9002, "127.0.0.1:1082"))
 
+    def test_bridge_hostport_parsing(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("http2socks", ROOT / "bridge/http2socks.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        split = module.split_hostport
+        # 普通 HTTP 请求不带端口（曾经在这里 int() 崩掉）
+        self.assertEqual(split("edgedl.me.gvt1.com", 80), ("edgedl.me.gvt1.com", 80))
+        self.assertEqual(split("127.0.0.1:27124", 80), ("127.0.0.1", 27124))
+        self.assertEqual(split("[::1]:8080", 80), ("[::1]", 8080))
+        self.assertEqual(split("chatgpt.com:443", 443), ("chatgpt.com", 443))
+
     def test_pac_domain_rules(self):
         source = (ROOT / "split.pac").read_text()
         domains = re.findall(r'^\s+"([^"]+)",?$', source, re.M)

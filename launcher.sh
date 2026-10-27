@@ -20,7 +20,9 @@ if [[ -n "$(main_pid)" ]]; then
 fi
 LOG="$HOME/Library/Logs/chatgpt-proxy-launch.log"
 mkdir -p "$(dirname "$LOG")"
+# NO_PROXY 只为挡回环：本地 MCP / 本地端口不该绕道境外出口。
 HTTP_PROXY="$CLIENT_URL" HTTPS_PROXY="$CLIENT_URL" ALL_PROXY="$CLIENT_URL" \
+NO_PROXY="127.0.0.1,localhost,::1" no_proxy="127.0.0.1,localhost,::1" \
   "$APP_PATH/Contents/MacOS/ChatGPT" "--proxy-server=$CLIENT_URL" >>"$LOG" 2>&1 &
 if [[ -n "${BRIDGE_PORT:-}" ]]; then
   echo "已启动 ChatGPT（经本地桥 ${CLIENT_URL} → SOCKS ${SOCKS_URL}）；连接状态请用 diagnose.sh 检查。"

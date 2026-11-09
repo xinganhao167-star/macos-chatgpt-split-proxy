@@ -1,5 +1,26 @@
 # 变更记录
 
+## 2026-11-09
+
+### 新增：GitHub 与 Google 相关域名纳入分流规则
+
+`split.pac` 的代理名单从「OpenAI/ChatGPT + X」扩展到「OpenAI/ChatGPT + X + GitHub + Google」。
+
+- GitHub：`github.com`、`githubusercontent.com`、`githubassets.com` 及各自子域。
+- Google：搜索与账号（`google.com` / `*.google.com` / `accounts.google.com`）、
+  Workspace（Drive/Docs/Gmail/Sheets 等）、`googleapis.com`、`gstatic.com`、
+  `googleusercontent.com`、`ggpht.com`、`gmail.com` / `googlemail.com`、
+  YouTube（`youtube.com` / `youtu.be` / `ytimg.com` / `googlevideo.com`）、
+  `blogger.com` / `blogspot.com`、Firebase（`firebaseio.com` / `firebaseapp.com` /
+  `crashlytics.com`）、Google Cloud（`appspot.com` / `cloudfunctions.net` / `run.app` /
+  `gcr.io` / `pkg.dev`）、`googlesource.com`、`gvt1.com` / `gvt2.com`、
+  `recaptcha.net`、`ampproject.org`。
+- 不含 `google.cn` / `googleapis.cn` / `gstatic.cn`：这三个在国内可直连，留在直连侧更快。
+- 不含 `google-analytics.com` / `googletagmanager.com` / `googlesyndication.com` /
+  `doubleclick.net`：国内站点常用这些统计脚本，走代理会让这些站点首屏变慢。
+- `tests/test_proxy.py` 补充 Google 与 GitHub 域名的路由断言（含 `notgoogle.com`、
+  `google.com.example.org` 等反例）。
+
 ## 2026-10-27（续）
 
 ### 新增：SNI 中继正式入库（`relay/`）

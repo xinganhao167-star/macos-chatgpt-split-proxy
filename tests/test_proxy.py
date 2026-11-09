@@ -229,10 +229,19 @@ class ProxyTests(unittest.TestCase):
             return "PROXY" if any(fnmatch.fnmatchcase(host.lower(), pat) for pat in domains) else "DIRECT"
         for host in ("chatgpt.com", "openai.com", "api.openai.com", "cdn.oaistatic.com",
                      "x.com", "api.x.com", "twitter.com", "api.twitter.com", "t.co",
-                     "pbs.twimg.com", "video.twimg.com"):
+                     "pbs.twimg.com", "video.twimg.com",
+                     "github.com", "api.github.com", "raw.githubusercontent.com",
+                     "google.com", "www.google.com", "mail.google.com", "drive.google.com",
+                     "docs.google.com", "scholar.google.com", "translate.google.com",
+                     "accounts.google.com", "oauth2.googleapis.com", "storage.googleapis.com",
+                     "fonts.googleapis.com", "fonts.gstatic.com", "ajax.googleapis.com",
+                     "www.youtube.com", "youtu.be", "i.ytimg.com", "r1---sn.googlevideo.com",
+                     "play.google.com", "firebase.google.com", "crashlytics.com",
+                     "lh3.googleusercontent.com", "yt3.ggpht.com", "recaptcha.net"):
             self.assertEqual(route(host), "PROXY", host)
         for host in ("example.com", "baidu.com", "notchatgpt.com", "notx.com",
-                     "x.com.example.org", "nottwitter.com", "t.co.example.org"):
+                     "x.com.example.org", "nottwitter.com", "t.co.example.org",
+                     "notgoogle.com", "notgithub.com", "google.com.example.org"):
             self.assertEqual(route(host), "DIRECT", host)
 
     def test_shell_syntax(self):

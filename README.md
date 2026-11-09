@@ -87,7 +87,7 @@ sudo bash relay/teardown-root.sh            # 卸：只删自己的标记块与�
 
 日常使用：先连接本地 HTTP 代理，再在 Chrome 中访问 [ChatGPT](https://chatgpt.com) 或 [X](https://x.com)；桌面端用 `~/Desktop/ChatGPT代理启动.command` 打开。启动器在代理不可用时拒绝启动；若 ChatGPT 已运行，它会提示你在应用内**手动退出**，不会终止现有进程或 Codex 任务。网页 PAC 会把 OpenAI/ChatGPT 域名、X 网页所需的 `x.com`、`twitter.com`、`t.co`、`twimg.com`、GitHub 相关域名以及 Google 相关域名交给本地代理，其余域名直连。`chatgpt.com`、`openai.com`、`x.com`、`github.com` 和 `google.com` 根域名都包含在规则中。
 
-Google 规则覆盖搜索与账号、Drive/Docs/Gmail 等 Workspace、YouTube、Firebase/Cloud、静态资源与下载、头像图片、reCAPTCHA 等，不含 `google.cn`、`googleapis.cn`、`gstatic.cn`——这三个在国内可直连，留在直连侧更快。
+Google 规则覆盖搜索与账号、Drive/Docs/Gmail 等 Workspace、YouTube、Firebase/Cloud、静态资源与下载、头像图片、reCAPTCHA 等。搜索包含 `google.com.hk` 及其子域，避免从 `google.com` 跳转到香港域名后误走直连；另含 `google.co.jp`、`google.co.kr`、`google.com.tw`、`google.com.sg`、`google.co.uk`、`google.ca`、`google.de`、`google.fr`、`google.co.in`、`google.com.br` 等地区域名，换节点后同样不会被误判为直连。不含 `google.cn`、`googleapis.cn`、`gstatic.cn`。
 
 ## 看门狗与安全恢复
 

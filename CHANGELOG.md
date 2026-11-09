@@ -2,6 +2,14 @@
 
 ## 2026-11-09
 
+### 修复：Google 搜索跳转香港域名后无法访问
+
+- 浏览器网络日志显示 `www.google.com` 已走代理，但跳转后的 `www.google.com.hk` 被判为直连。
+- 补充 `google.com.hk` 与 `*.google.com.hk`，并增加根域、子域、大小写及相似域名的回归检查。
+- 同时补充其余地区 ccTLD（`google.co.jp`、`google.co.kr`、`google.com.tw`、`google.com.sg`、
+  `google.co.uk`、`google.ca`、`google.de`、`google.fr`、`google.co.in`、`google.com.br`），
+  换用其他地区节点后同样不会被误判为直连。
+
 ### 新增：GitHub 与 Google 相关域名纳入分流规则
 
 `split.pac` 的代理名单从「OpenAI/ChatGPT + X」扩展到「OpenAI/ChatGPT + X + GitHub + Google」。

@@ -91,6 +91,9 @@ function FindProxyForURL(url, host) {
     var googleDomains = [
         "google.com",
         "*.google.com",
+        // Google 搜索可能跳转至香港域名；*.google.com 不覆盖 google.com.hk。
+        "google.com.hk",
+        "*.google.com.hk",
         "googleapis.com",
         "*.googleapis.com",
         "gstatic.com",
@@ -146,6 +149,39 @@ function FindProxyForURL(url, host) {
 
     for (var m = 0; m < googleDomains.length; m++) {
         if (shExpMatch(host, googleDomains[m])) {
+            return "PROXY 127.0.0.1:8080";
+        }
+    }
+
+    // Google 的各地区 ccTLD：Google 会按出口地区把搜索页重定向到对应域名
+    // （港区出口 → www.google.com.hk，该域名已在上方 googleDomains 中列出）
+    var googleCcTlds = [
+        "google.co.jp",
+        "*.google.co.jp",
+        "google.co.kr",
+        "*.google.co.kr",
+        "google.com.tw",
+        "*.google.com.tw",
+        "google.com.sg",
+        "*.google.com.sg",
+        "google.co.uk",
+        "*.google.co.uk",
+        "google.com.au",
+        "*.google.com.au",
+        "google.ca",
+        "*.google.ca",
+        "google.de",
+        "*.google.de",
+        "google.fr",
+        "*.google.fr",
+        "google.co.in",
+        "*.google.co.in",
+        "google.com.br",
+        "*.google.com.br"
+    ];
+
+    for (var n = 0; n < googleCcTlds.length; n++) {
+        if (shExpMatch(host, googleCcTlds[n])) {
             return "PROXY 127.0.0.1:8080";
         }
     }
